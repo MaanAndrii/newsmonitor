@@ -633,6 +633,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Не знайдено"}, 404); return
         sources[src_type] = filtered
         write_json(SOURCES_FILE, sources)
+        STORAGE.delete_items_by_source_id(src_id)
         self.send_json({"ok": True})
 
     def _save_settings(self, body: dict):

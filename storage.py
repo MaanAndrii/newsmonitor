@@ -209,6 +209,12 @@ class Storage:
                 c.execute("DELETE FROM news_items")
         return filtered
 
+    def delete_items_by_source_id(self, source_id: str):
+        if not source_id:
+            return
+        with self.connect() as c:
+            c.execute("DELETE FROM news_items WHERE source_id = ?", (source_id,))
+
     def export_news_payload(self, ai_enabled: bool = False, new_count: int = 0):
         items = self.load_items()
         return {
