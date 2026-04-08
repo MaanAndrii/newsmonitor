@@ -581,6 +581,7 @@ let pollTimer      = null;
 let bgPollTimer    = null;
 let countdownTimer = null;
 let lastFinishedAt = null;
+let lastNewsUpdatedAt = null;
 let hasBotToken    = false;
 const kwUrgentMap  = {};
 let settingsCache  = {};
@@ -864,7 +865,7 @@ function renderSidebarSrc() {
   }));
 }
 
-async function loadNews() {
+async function loadNews(force=false) {
   try {
     const r = await fetch('/api/news');
     if (r.status === 404) {
@@ -874,6 +875,10 @@ async function loadNews() {
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
+    if (!force && lastNewsUpdatedAt && data.updated_at === lastNewsUpdatedAt) {
+      return;
+    }
+    lastNewsUpdatedAt = data.updated_at || null;
     allNews = data.items || [];
     const newCount = data.new_count || 0;
     newIds = new Set(allNews.slice(0, newCount).map(n => n.id));
@@ -1002,11 +1007,9 @@ function startBgPolling() {
     try {
       const s = await api('/api/status');
       startCountdown(s.next_fetch_at||null);
-      if (!s.running && s.finished_at && s.finished_at!==lastFinishedAt) {
-        lastFinishedAt=s.finished_at;
-        const fetchBtn=document.getElementById('fetch-btn');
-        if (!fetchBtn.disabled) await loadNews();
-      }
+      if (!s.running && s.finished_at && s.finished_at!==lastFinishedAt) lastFinishedAt=s.finished_at;
+      const fetchBtn=document.getElementById('fetch-btn');
+      if (!fetchBtn.disabled) await loadNews(false);
       const ls = await api('/api/listener/status');
       updateListenerUI(ls);
     } catch {}
