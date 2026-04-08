@@ -440,6 +440,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         routes = {
             "/api/sources":          lambda: self._add_source(body),
             "/api/sources/toggle":   lambda: self._toggle_source(body),
+            "/api/sources/rename":   lambda: self._rename_source(body),
             "/api/settings":         lambda: self._save_settings(body),
             "/api/news/read":        lambda: self._mark_read(body),
             "/api/news/unread":      lambda: self._mark_unread(body),
@@ -603,6 +604,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 s["enabled"] = not s["enabled"]
                 write_json(SOURCES_FILE, sources)
                 self.send_json({"ok": True, "enabled": s["enabled"]}); return
+        self.send_json({"error": "Не знайдено"}, 404)
+
+    def _rename_source(self, body: dict):
+        src_type = str(body.get("type", "")).strip()
+        src_id   = str(body.get("id", "")).strip()
+        name     = str(body.get("name", "")).strip()
+        if src_type not in ("rss", "telegram") or not src_id or not name:
+            self.send_json({"error": "Невірні параметри"}, 400); return
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        for s in sources.get(src_type, []):
+            if s["id"] == src_id:
+                s["name"] = name
+                write_json(SOURCES_FILE, sources)
+                self.send_json({"ok": True, "name": name}); return
         self.send_json({"error": "Не знайдено"}, 404)
 
     def _delete_source(self, body: dict):

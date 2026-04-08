@@ -136,6 +136,8 @@ a { color: inherit; text-decoration: none; }
 .toggle.off::after { left: 3px; }
 .del-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #f5c6c6; background: #fff; color: #e53935; cursor: pointer; font-size: 13px; }
 .del-btn:hover { background: #fde8e8; }
+.edit-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #d0d0c8; background: #fff; color: #185FA5; cursor: pointer; font-size: 13px; margin-right: 6px; }
+.edit-btn:hover { background: #eaf1fb; border-color: #90caf9; }
 
 /* Add form */
 .add-form { padding: 14px 18px; background: #fafaf8; border-top: 1px solid #f0f0ec; display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
@@ -1023,20 +1025,22 @@ async function loadSources() {
 function renderSrcTable(type, list) {
   const tbody   = document.getElementById(type==='rss'?'rss-tbody':'tg-tbody');
   const countEl = document.getElementById(type==='rss'?'rss-count':'tg-count');
-  countEl.textContent = `${list.filter(s=>s.enabled).length} з ${list.length} активних`;
+  const sorted = [...list].sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), 'uk', {sensitivity:'base'}));
+  countEl.textContent = `${sorted.filter(s=>s.enabled).length} з ${sorted.length} активних`;
   tbody.innerHTML='';
-  if (!list.length) {
+  if (!sorted.length) {
     tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">Немає джерел. Додайте нижче.</td></tr>`;
     return;
   }
-  list.forEach(s => {
+  sorted.forEach(s => {
     const tr=document.createElement('tr');
     tr.innerHTML=`
       <td><div class="row-name">${esc(s.name)}</div></td>
       <td><div class="row-sub">${esc(s.url)}</div></td>
       <td><button class="toggle ${s.enabled?'on':'off'}"></button></td>
-      <td><button class="del-btn">✕</button></td>`;
+      <td><button class="edit-btn">✎</button><button class="del-btn">✕</button></td>`;
     tr.querySelector('.toggle').addEventListener('click', function() { toggleSrc(type,s.id,this); });
+    tr.querySelector('.edit-btn').addEventListener('click', () => renameSrc(type,s.id,s.name));
     tr.querySelector('.del-btn').addEventListener('click', () => delSrc(type,s.id));
     tbody.appendChild(tr);
   });
@@ -1057,6 +1061,17 @@ async function delSrc(type,id) {
   try {
     const d=await api('/api/sources',{method:'DELETE',body:JSON.stringify({type,id})});
     d.ok?(toast('Видалено'),loadSources()):toast(d.error||'Помилка',true);
+  } catch { toast("Помилка з'єднання",true); }
+}
+
+async function renameSrc(type,id,currentName) {
+  const name = prompt('Нова назва джерела:', currentName || '');
+  if (name === null) return;
+  const cleaned = name.trim();
+  if (!cleaned) { toast('Назва не може бути порожньою', true); return; }
+  try {
+    const d = await api('/api/sources/rename', {method:'POST', body:JSON.stringify({type,id,name:cleaned})});
+    d.ok ? (toast('Назву оновлено'), loadSources()) : toast(d.error||'Помилка', true);
   } catch { toast("Помилка з'єднання",true); }
 }
 
