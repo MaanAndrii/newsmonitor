@@ -11,6 +11,8 @@ import base64
 import asyncio
 import subprocess
 import sys
+import re
+import html
 import threading
 import time
 import urllib.request
@@ -252,6 +254,29 @@ def get_listener_status() -> dict:
         return data
     except Exception:
         return {"status": "error", "updated_at": None, "error": "Cannot read status"}
+
+
+def detect_telegram_channel_name(username: str) -> str:
+    """Пробує підтягнути назву Telegram-каналу з публічної сторінки t.me."""
+    if not username:
+        return ""
+    try:
+        url = f"https://t.me/{username}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (NewsMonitor)"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r'<meta\\s+property=\"og:title\"\\s+content=\"([^\"]+)\"', body, re.IGNORECASE)
+        if m:
+            title = html.unescape(m.group(1)).strip()
+            if title and title.lower() != "telegram":
+                return title
+    except Exception:
+        pass
+    return ""
 
 
 # ── Авторизація Telegram ──────────────────────────────────────────────────────
@@ -543,14 +568,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         src_type = body.get("type", "")
         name     = str(body.get("name", "")).strip()
         url      = str(body.get("url",  "")).strip()
-        if src_type not in ("rss", "telegram") or not name or not url:
+        if src_type not in ("rss", "telegram") or not url:
             self.send_json({"error": "Заповніть всі поля"}, 400); return
+        if src_type == "rss" and not name:
+            self.send_json({"error": "Для RSS вкажіть назву"}, 400); return
         if src_type == "telegram":
             if url.startswith("@"):
                 url = "https://t.me/" + url[1:]
             elif not url.startswith("http"):
                 url = "https://t.me/" + url
             src_id = url.rstrip("/").split("/")[-1].lstrip("@").lower()
+            if not name:
+                auto_name = detect_telegram_channel_name(src_id)
+                name = auto_name or src_id
         else:
             src_id = "rss_" + hashlib.md5(url.encode()).hexdigest()[:8]
         sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
