@@ -185,10 +185,12 @@ def append_item(item: dict, keep_days: int, max_items: int) -> None:
             return
         STORAGE.append_item(item)
         result = STORAGE.cleanup(keep_days, max_items)
+        prev_new = int(STORAGE.get_kv("new_count", 0) or 0)
+        STORAGE.set_kv("new_count", prev_new + 1)
         _write_json(DATA_FILE, {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "total":      len(result),
-            "new_count":  1,
+            "new_count":  prev_new + 1,
             "items":      result,
         })
 

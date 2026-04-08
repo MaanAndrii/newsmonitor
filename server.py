@@ -470,9 +470,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _serve_news(self):
         try:
+            new_count = int(STORAGE.get_kv("new_count", 0) or 0)
             payload = STORAGE.export_news_payload(
                 ai_enabled=bool(resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS)).get("ai_enabled", False)),
-                new_count=0,
+                new_count=max(0, new_count),
             )
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)

@@ -527,6 +527,7 @@ async def run():
 
     STORAGE.upsert_items(all_items)
     all_items = STORAGE.cleanup(keep_days, max_items)
+    STORAGE.set_kv("new_count", len(new_items))
     payload = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "ai_enabled": ai_enabled,
