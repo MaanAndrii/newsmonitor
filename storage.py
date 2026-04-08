@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from email.utils import parsedate_to_datetime
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,7 +22,13 @@ def parse_time(value: str):
             value += "+00:00"
         return datetime.fromisoformat(value)
     except Exception:
-        return None
+        try:
+            dt = parsedate_to_datetime(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
 
 
 class Storage:
@@ -158,7 +165,7 @@ class Storage:
 
     def load_items(self) -> list[dict]:
         with self.connect() as c:
-            rows = c.execute("SELECT * FROM news_items ORDER BY time DESC").fetchall()
+            rows = c.execute("SELECT * FROM news_items").fetchall()
         data = []
         for r in rows:
             data.append(
@@ -178,6 +185,10 @@ class Storage:
                     "matched_keywords": json.loads(r["matched_keywords"] or "[]"),
                 }
             )
+        data.sort(
+            key=lambda x: parse_time(x.get("time", "")) or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
         return data
 
     def cleanup(self, keep_days: int, max_items: int):

@@ -10,6 +10,7 @@ import hashlib
 import re
 import urllib.request
 import urllib.parse
+import email.utils
 from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from telethon import TelegramClient
@@ -255,6 +256,18 @@ def fetch_rss(sources: list, depth: int) -> list:
                 raw_text = entry.get("summary") or entry.get("description") or ""
                 text     = re.sub(r"<[^>]+>", " ", raw_text).strip()
                 link     = entry.get("link", "")
+                published = entry.get("published_parsed") or entry.get("updated_parsed")
+                if published:
+                    ts = datetime(*published[:6], tzinfo=timezone.utc).isoformat()
+                else:
+                    raw_dt = entry.get("published") or entry.get("updated") or ""
+                    try:
+                        dt = email.utils.parsedate_to_datetime(raw_dt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        ts = dt.astimezone(timezone.utc).isoformat()
+                    except Exception:
+                        ts = datetime.now(timezone.utc).isoformat()
                 item_id  = hashlib.md5(
                     (link or entry.get("title", "")).encode()
                 ).hexdigest()[:12]
@@ -266,8 +279,7 @@ def fetch_rss(sources: list, depth: int) -> list:
                     "title":     entry.get("title", "").strip(),
                     "text":      text,
                     "url":       link,
-                    "time":      entry.get("published",
-                                 datetime.now(timezone.utc).isoformat()),
+                    "time":      ts,
                 })
                 count += 1
             print(f"{count} новин")
