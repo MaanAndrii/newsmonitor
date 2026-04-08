@@ -206,7 +206,7 @@ def analyze_batch(items: list, api_key: str, categories: list,
         f"{IMPORTANCE_CRITERIA}\n"
         f"{priorities_block}\n"
         "Для кожної новини поверни об'єкт:\n"
-        '{"index":N,"summary":"підсумок 1-2 реченнями українською",'
+        '{"index":N,'
         f'"category":одне з [{cat_list}],'
         '"importance":1-10,"is_duplicate":true/false}\n\n'
         "ТІЛЬКИ JSON масив, без пояснень та markdown."
@@ -446,7 +446,6 @@ async def run():
                     idx = i + ai_res["index"] - 1
                     if 0 <= idx < len(new_items):
                         new_items[idx].update({
-                            "summary":      ai_res.get("summary", ""),
                             "category":     ai_res.get("category", categories[0]["id"]),
                             "importance":   int(ai_res.get("importance", 5)),
                             "is_duplicate": bool(ai_res.get("is_duplicate", False)),

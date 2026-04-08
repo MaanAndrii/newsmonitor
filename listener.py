@@ -148,7 +148,7 @@ def analyze_single(item: dict, api_key: str, categories: list,
         f"{IMPORTANCE_CRITERIA}\n"
         f"{priorities_block}\n"
         "Поверни:\n"
-        '{"summary":"підсумок 1-2 реченнями українською",'
+        '{'
         f'"category":одне з [{cat_list}],'
         '"importance":1-10,"is_duplicate":false}\n\n'
         "ТІЛЬКИ JSON об'єкт, без пояснень та markdown."
@@ -317,7 +317,6 @@ async def run_listener():
                 result = analyze_single(item, api_key, categories, ai_model, priorities)
                 if result:
                     item.update({
-                        "summary":      result.get("summary", ""),
                         "category":     result.get("category", item["category"]),
                         "importance":   int(result.get("importance", 5)),
                         "is_duplicate": bool(result.get("is_duplicate", False)),
