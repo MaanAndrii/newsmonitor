@@ -11,6 +11,7 @@ SEEN_FILE     = "seen_ids.json"
 SESSION_FILE  = "tg_session"
 LISTENER_FILE = "listener_status.json"
 LOCK_FILE     = "listener.lock"
+DB_FILE       = "newsmonitor.db"
 
 # Доступні моделі Claude
 AI_MODELS = [
@@ -61,4 +62,6 @@ DEFAULT_SETTINGS = {
     # Категорії та ключові слова — порожні, налаштовуються вручну
     "categories":             [],
     "keywords":               [],
+    # Security
+    "web_auth_enabled":       False,
 }
