@@ -1,0 +1,652 @@
+"""
+server.py — веб-сервер для дашборду
+Запуск: python3 server.py  →  http://localhost:8000
+"""
+
+import http.server
+import json
+import os
+import hashlib
+import asyncio
+import subprocess
+import threading
+import time
+import urllib.request
+import urllib.parse
+from urllib.parse import urlparse
+
+from config import (
+    SOURCES_FILE, SETTINGS_FILE, DATA_FILE, READ_FILE,
+    LISTENER_FILE, SESSION_FILE,
+    DEFAULT_SOURCES, DEFAULT_SETTINGS
+)
+
+PORT = 8000
+
+# ── Стан fetcher-а ────────────────────────────────────────────────────────────
+_fetcher_lock   = threading.Lock()
+_fetcher_status = {
+    "running":       False,
+    "started_at":    None,
+    "finished_at":   None,
+    "error":         None,
+    "next_fetch_at": None,
+}
+
+_auto_timer:   threading.Timer | None = None
+_digest_timer: threading.Timer | None = None
+
+# ── Стан авторизації Telegram ─────────────────────────────────────────────────
+# Тримаємо TelegramClient між кроками send_code → sign_in
+_tg_auth: dict = {
+    "client":   None,
+    "phone":    None,
+    "phone_code_hash": None,
+    "loop":     None,
+}
+_tg_auth_lock = threading.Lock()
+
+
+# ── Fetcher ───────────────────────────────────────────────────────────────────
+
+def _run_fetcher_process():
+    with _fetcher_lock:
+        if _fetcher_status["running"]:
+            return
+        _fetcher_status["running"]     = True
+        _fetcher_status["started_at"]  = time.time()
+        _fetcher_status["finished_at"] = None
+        _fetcher_status["error"]       = None
+
+    def _do():
+        try:
+            subprocess.run(["python3", "fetcher.py"], check=False)
+        except Exception as e:
+            _fetcher_status["error"] = str(e)
+        finally:
+            with _fetcher_lock:
+                _fetcher_status["running"]     = False
+                _fetcher_status["finished_at"] = time.time()
+
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def _schedule_auto_fetch(interval_minutes: int):
+    global _auto_timer
+    if _auto_timer:
+        _auto_timer.cancel()
+        _auto_timer = None
+    if interval_minutes > 0:
+        next_at = time.time() + interval_minutes * 60
+        _fetcher_status["next_fetch_at"] = next_at
+        _auto_timer = threading.Timer(
+            interval_minutes * 60, _auto_fetch_tick, args=[interval_minutes]
+        )
+        _auto_timer.daemon = True
+        _auto_timer.start()
+        print(f"  [AUTO] Збір RSS через {interval_minutes} хв")
+    else:
+        _fetcher_status["next_fetch_at"] = None
+
+
+def _auto_fetch_tick(interval_minutes: int):
+    print(f"  [AUTO] Збір о {time.strftime('%H:%M:%S')}")
+    _run_fetcher_process()
+    _schedule_auto_fetch(interval_minutes)
+
+
+def _schedule_digest(digest_time: str, enabled: bool):
+    global _digest_timer
+    if _digest_timer:
+        _digest_timer.cancel()
+        _digest_timer = None
+    if not enabled or not digest_time:
+        return
+    try:
+        h, m   = map(int, digest_time.split(":"))
+        now    = time.localtime()
+        target = time.mktime(time.struct_time((
+            now.tm_year, now.tm_mon, now.tm_mday,
+            h, m, 0, now.tm_wday, now.tm_yday, now.tm_isdst
+        )))
+        if target <= time.time():
+            target += 86400
+        _digest_timer = threading.Timer(
+            target - time.time(), _digest_tick, args=[digest_time]
+        )
+        _digest_timer.daemon = True
+        _digest_timer.start()
+        print(f"  [DIGEST] Заплановано на {digest_time}")
+    except Exception as e:
+        print(f"  [DIGEST] Помилка: {e}")
+
+
+def _digest_tick(digest_time: str):
+    s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+    if s.get("bot_token") and s.get("bot_chat_id"):
+        _send_digest(s["bot_token"], s["bot_chat_id"],
+                     max(1, int(s.get("digest_count", 5))))
+    _schedule_digest(digest_time, True)
+
+
+def _send_digest(bot_token: str, chat_id: str, count: int):
+    if not os.path.exists(DATA_FILE):
+        return
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        top = sorted(data.get("items", []),
+                     key=lambda x: x.get("importance", 0), reverse=True)[:count]
+        if not top:
+            return
+        lines = [f"<b>📰 Дайджест — топ {len(top)} новин</b>\n"]
+        for i, item in enumerate(top, 1):
+            line = f"{i}. <b>{item.get('title','')}</b> [{item.get('source','')} | {item.get('importance',5)}/10]"
+            if item.get("url"):
+                line += f"\n   <a href=\"{item['url']}\">Читати</a>"
+            lines.append(line)
+        _send_bot_message(bot_token, chat_id, "\n\n".join(lines))
+        print(f"  [DIGEST] Надіслано {len(top)} новин")
+    except Exception as e:
+        print(f"  [DIGEST] {e}")
+
+
+def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
+    try:
+        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = urllib.parse.urlencode({
+            "chat_id":                  chat_id,
+            "text":                     text,
+            "parse_mode":               "HTML",
+            "disable_web_page_preview": "true",
+        }).encode()
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read()).get("ok", False)
+    except Exception as e:
+        print(f"  [BOT] {e}")
+        return False
+
+
+# ── Утиліти ──────────────────────────────────────────────────────────────────
+
+def load_json(path: str, default) -> dict:
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(default, dict):
+                for k, v in default.items():
+                    if k not in data:
+                        data[k] = v
+            return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    write_json(path, default)
+    return dict(default)
+
+def write_json(path: str, data) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+def load_read_ids() -> set:
+    if not os.path.exists(READ_FILE):
+        return set()
+    try:
+        with open(READ_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def save_read_ids(ids: set) -> None:
+    write_json(READ_FILE, sorted(ids))
+
+def get_listener_status() -> dict:
+    if not os.path.exists(LISTENER_FILE):
+        return {"status": "stopped", "updated_at": None, "error": ""}
+    try:
+        with open(LISTENER_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        upd = data.get("updated_at", 0)
+        if data.get("status") == "running" and time.time() - upd > 60:
+            data["status"] = "unknown"
+        return data
+    except Exception:
+        return {"status": "error", "updated_at": None, "error": "Cannot read status"}
+
+
+# ── Авторизація Telegram ──────────────────────────────────────────────────────
+
+def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
+    """Крок 1: надсилає код підтвердження на номер телефону."""
+    from telethon.sync import TelegramClient as SyncClient
+    try:
+        # закриваємо попередній клієнт якщо є
+        _cleanup_tg_auth()
+
+        client = SyncClient(SESSION_FILE, api_id, api_hash)
+        client.connect()
+
+        if client.is_user_authorized():
+            client.disconnect()
+            return {"ok": True, "already_authorized": True}
+
+        result = client.send_code_request(phone)
+        with _tg_auth_lock:
+            _tg_auth["client"]          = client
+            _tg_auth["phone"]           = phone
+            _tg_auth["phone_code_hash"] = result.phone_code_hash
+        return {"ok": True, "already_authorized": False}
+    except Exception as e:
+        _cleanup_tg_auth()
+        return {"ok": False, "error": str(e)}
+
+
+def _tg_auth_sign_in(code: str, password: str = "") -> dict:
+    """Крок 2: підтверджує код (і пароль 2FA якщо є)."""
+    from telethon.errors import (
+        PhoneCodeInvalidError, PhoneCodeExpiredError,
+        SessionPasswordNeededError
+    )
+    with _tg_auth_lock:
+        client          = _tg_auth.get("client")
+        phone           = _tg_auth.get("phone")
+        phone_code_hash = _tg_auth.get("phone_code_hash")
+
+    if not client or not phone:
+        return {"ok": False, "error": "Спочатку надішліть код (крок 1)"}
+
+    try:
+        client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+        client.disconnect()
+        _cleanup_tg_auth()
+        return {"ok": True}
+    except SessionPasswordNeededError:
+        if not password:
+            return {"ok": False, "need_password": True}
+        try:
+            client.sign_in(password=password)
+            client.disconnect()
+            _cleanup_tg_auth()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
+        return {"ok": False, "error": "Невірний або прострочений код"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _cleanup_tg_auth():
+    with _tg_auth_lock:
+        client = _tg_auth.get("client")
+        if client:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+        _tg_auth["client"]          = None
+        _tg_auth["phone"]           = None
+        _tg_auth["phone_code_hash"] = None
+
+
+def _tg_auth_logout() -> dict:
+    """Видаляє сесію Telegram."""
+    _cleanup_tg_auth()
+    session_path = SESSION_FILE + ".session"
+    if os.path.exists(session_path):
+        try:
+            os.remove(session_path)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    return {"ok": True}
+
+
+# ── HTTP Handler ──────────────────────────────────────────────────────────────
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+
+    def _read_body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length))
+        except (ValueError, json.JSONDecodeError):
+            return {}
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self):
+        p = urlparse(self.path).path
+        routes = {
+            "/api/news":            self._serve_news,
+            "/api/sources":         lambda: self.send_json(load_json(SOURCES_FILE, DEFAULT_SOURCES)),
+            "/api/settings":        self._serve_settings,
+            "/api/status":          lambda: self.send_json(dict(_fetcher_status)),
+            "/api/listener/status": lambda: self.send_json(get_listener_status()),
+            "/api/refresh":         self._start_fetcher,
+            "/api/tg/session":      self._tg_session_status,
+        }
+        if p in routes:
+            routes[p]()
+        else:
+            if p in ("/", ""):
+                self.path = "/index.html"
+            super().do_GET()
+
+    def do_POST(self):
+        p    = urlparse(self.path).path
+        body = self._read_body()
+        routes = {
+            "/api/sources":          lambda: self._add_source(body),
+            "/api/sources/toggle":   lambda: self._toggle_source(body),
+            "/api/settings":         lambda: self._save_settings(body),
+            "/api/news/read":        lambda: self._mark_read(body),
+            "/api/news/unread":      lambda: self._mark_unread(body),
+            "/api/news/clear_read":  lambda: (save_read_ids(set()), self.send_json({"ok": True})),
+            "/api/news/send":        lambda: self._send_news(body),
+            "/api/tg/send_code":     lambda: self._tg_send_code(body),
+            "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
+            "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
+        }
+        if p in routes:
+            routes[p]()
+        else:
+            self.send_json({"error": "Not found"}, 404)
+
+    def do_DELETE(self):
+        p    = urlparse(self.path).path
+        body = self._read_body()
+        if p == "/api/sources":
+            self._delete_source(body)
+        else:
+            self.send_json({"error": "Not found"}, 404)
+
+    # ── GET ───────────────────────────────────────────────────────────────────
+
+    def _serve_news(self):
+        if not os.path.exists(DATA_FILE):
+            self.send_json({"error": "no data"}, 404); return
+        try:
+            with open(DATA_FILE, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", len(body))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def _serve_settings(self):
+        s    = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        safe = {k: v for k, v in s.items()
+                if k not in ("anthropic_api_key", "telegram_api_hash", "bot_token")}
+        safe["has_anthropic_key"] = bool(s.get("anthropic_api_key"))
+        safe["has_telegram_hash"] = bool(s.get("telegram_api_hash"))
+        safe["has_bot_token"]     = bool(s.get("bot_token"))
+        self.send_json(safe)
+
+    def _tg_session_status(self):
+        has_session = os.path.exists(SESSION_FILE + ".session")
+        if not has_session:
+            self.send_json({"authorized": False}); return
+        # перевіряємо чи сесія дійсна
+        s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        api_id   = int(s.get("telegram_api_id",   0) or 0)
+        api_hash = s.get("telegram_api_hash", "")
+        if not api_id or not api_hash:
+            self.send_json({"authorized": False, "error": "Не вказано API ID/Hash"}); return
+        try:
+            from telethon.sync import TelegramClient as SyncClient
+            client = SyncClient(SESSION_FILE, api_id, api_hash)
+            client.connect()
+            authorized = client.is_user_authorized()
+            me = None
+            if authorized:
+                try:
+                    user = client.get_me()
+                    me   = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username
+                except Exception:
+                    pass
+            client.disconnect()
+            self.send_json({"authorized": authorized, "name": me})
+        except Exception as e:
+            self.send_json({"authorized": False, "error": str(e)})
+
+    def _start_fetcher(self):
+        with _fetcher_lock:
+            if _fetcher_status["running"]:
+                self.send_json({"status": "already_running"}); return
+        _run_fetcher_process()
+        self.send_json({"status": "started"})
+
+    # ── POST ──────────────────────────────────────────────────────────────────
+
+    def _tg_send_code(self, body: dict):
+        phone    = str(body.get("phone", "")).strip()
+        s        = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        api_id   = int(s.get("telegram_api_id",   0) or 0)
+        api_hash = s.get("telegram_api_hash", "")
+        if not phone:
+            self.send_json({"ok": False, "error": "Вкажіть номер телефону"}); return
+        if not api_id or not api_hash:
+            self.send_json({"ok": False, "error": "Спочатку вкажіть Telegram API ID та Hash"}); return
+
+        def do():
+            result = _tg_auth_send_code(phone, api_id, api_hash)
+            return result
+
+        result = do()
+        self.send_json(result)
+
+    def _tg_sign_in(self, body: dict):
+        code     = str(body.get("code", "")).strip()
+        password = str(body.get("password", "")).strip()
+        if not code:
+            self.send_json({"ok": False, "error": "Вкажіть код підтвердження"}); return
+        result = _tg_auth_sign_in(code, password)
+        self.send_json(result)
+
+    def _add_source(self, body: dict):
+        src_type = body.get("type", "")
+        name     = str(body.get("name", "")).strip()
+        url      = str(body.get("url",  "")).strip()
+        if src_type not in ("rss", "telegram") or not name or not url:
+            self.send_json({"error": "Заповніть всі поля"}, 400); return
+        if src_type == "telegram":
+            if url.startswith("@"):
+                url = "https://t.me/" + url[1:]
+            elif not url.startswith("http"):
+                url = "https://t.me/" + url
+            src_id = url.rstrip("/").split("/")[-1].lstrip("@").lower()
+        else:
+            src_id = "rss_" + hashlib.md5(url.encode()).hexdigest()[:8]
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        if any(s["id"] == src_id for s in sources.get(src_type, [])):
+            self.send_json({"error": f"Джерело вже існує (id: {src_id})"}, 409); return
+        new_src = {"id": src_id, "name": name, "url": url, "enabled": True}
+        sources.setdefault(src_type, []).append(new_src)
+        write_json(SOURCES_FILE, sources)
+        print(f"  [API] Додано {src_type}: {src_id}")
+        self.send_json({"ok": True, "source": new_src})
+
+    def _toggle_source(self, body: dict):
+        src_type = body.get("type", "")
+        src_id   = body.get("id",   "")
+        if not src_type or not src_id:
+            self.send_json({"error": "Невірні параметри"}, 400); return
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        for s in sources.get(src_type, []):
+            if s["id"] == src_id:
+                s["enabled"] = not s["enabled"]
+                write_json(SOURCES_FILE, sources)
+                self.send_json({"ok": True, "enabled": s["enabled"]}); return
+        self.send_json({"error": "Не знайдено"}, 404)
+
+    def _delete_source(self, body: dict):
+        src_type = body.get("type", "")
+        src_id   = body.get("id",   "")
+        if not src_type or not src_id:
+            self.send_json({"error": "Невірні параметри"}, 400); return
+        sources  = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        original = sources.get(src_type, [])
+        filtered = [s for s in original if s["id"] != src_id]
+        if len(filtered) == len(original):
+            self.send_json({"error": "Не знайдено"}, 404); return
+        sources[src_type] = filtered
+        write_json(SOURCES_FILE, sources)
+        self.send_json({"ok": True})
+
+    def _save_settings(self, body: dict):
+        settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+
+        # булеві
+        for k in ("ai_enabled", "digest_enabled", "listener_enabled"):
+            if k in body:
+                settings[k] = bool(body[k])
+
+        # числові
+        for k in ("rss_depth", "tg_depth", "auto_fetch_interval",
+                  "keep_days", "max_items", "digest_count"):
+            if k in body:
+                try:
+                    settings[k] = max(0, int(body[k]))
+                except (ValueError, TypeError):
+                    pass
+
+        if "telegram_api_id" in body:
+            try:
+                settings["telegram_api_id"] = int(body["telegram_api_id"])
+            except (ValueError, TypeError):
+                pass
+
+        # рядкові
+        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities"):
+            if k in body:
+                settings[k] = str(body[k])
+
+        # секрети — зберігаємо тільки якщо не порожні
+        for k in ("anthropic_api_key", "telegram_api_hash", "bot_token"):
+            val = str(body.get(k, "")).strip()
+            if val:
+                settings[k] = val
+
+        # категорії
+        if "categories" in body and isinstance(body["categories"], list):
+            cats = []
+            for c in body["categories"]:
+                cid   = str(c.get("id",    "")).strip()
+                cname = str(c.get("name",  "")).strip()
+                color = str(c.get("color", "#888888")).strip()
+                if cid and cname:
+                    cats.append({"id": cid, "name": cname, "color": color})
+            settings["categories"] = cats  # зберігаємо навіть порожній список
+
+        # ключові слова
+        if "keywords" in body and isinstance(body["keywords"], list):
+            kws = []
+            for kw in body["keywords"]:
+                phrase = str(kw.get("phrase", "")).strip()
+                urgent = bool(kw.get("urgent", False))
+                if phrase:
+                    kws.append({"id": phrase, "phrase": phrase, "urgent": urgent})
+            settings["keywords"] = kws
+
+        write_json(SETTINGS_FILE, settings)
+        _schedule_auto_fetch(settings.get("auto_fetch_interval", 0))
+        _schedule_digest(settings.get("digest_time", "09:00"),
+                         settings.get("digest_enabled", False))
+        self.send_json({"ok": True})
+
+    def _send_news(self, body: dict):
+        item_id = str(body.get("id", "")).strip()
+        if not item_id:
+            self.send_json({"error": "Немає id"}, 400); return
+        s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        bot_token   = s.get("bot_token", "")
+        bot_chat_id = s.get("bot_chat_id", "")
+        if not bot_token or not bot_chat_id:
+            self.send_json({"error": "Налаштуйте Bot Token і Chat ID"}, 400); return
+        if not os.path.exists(DATA_FILE):
+            self.send_json({"error": "Немає даних"}, 404); return
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        item = next((it for it in data.get("items", []) if it["id"] == item_id), None)
+        if not item:
+            self.send_json({"error": "Новину не знайдено"}, 404); return
+        imp  = item.get("importance", 5)
+        lines = [f"📤 <b>{item['title']}</b>", ""]
+        if item.get("summary"):
+            lines.append(item["summary"])
+            lines.append("")
+        lines.append(f"Джерело: {item['source']} | {imp}/10")
+        if item.get("url"):
+            lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
+        ok = _send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
+        self.send_json({"ok": True} if ok else
+                       {"error": "Не вдалося надіслати. Перевірте токен і chat_id"})
+
+    def _mark_read(self, body: dict):
+        item_id = str(body.get("id", "")).strip()
+        if not item_id:
+            self.send_json({"error": "Немає id"}, 400); return
+        ids = load_read_ids(); ids.add(item_id)
+        save_read_ids(ids); self.send_json({"ok": True})
+
+    def _mark_unread(self, body: dict):
+        item_id = str(body.get("id", "")).strip()
+        if not item_id:
+            self.send_json({"error": "Немає id"}, 400); return
+        ids = load_read_ids(); ids.discard(item_id)
+        save_read_ids(ids); self.send_json({"ok": True})
+
+    # ── Відповіді ─────────────────────────────────────────────────────────────
+
+    def send_json(self, data, code: int = 200):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", len(body))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        super().end_headers()
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+# ── Запуск ────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+
+    interval = settings.get("auto_fetch_interval", 0)
+    if interval > 0:
+        print(f"Автозбір: кожні {interval} хв")
+        _schedule_auto_fetch(interval)
+
+    if settings.get("digest_enabled"):
+        _schedule_digest(settings.get("digest_time", "09:00"), True)
+
+    print(f"Сервер: http://localhost:{PORT}")
+    print("Ctrl+C — зупинити\n")
+    with http.server.HTTPServer(("", PORT), Handler) as httpd:
+        httpd.serve_forever()

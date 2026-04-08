@@ -1,0 +1,1350 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>News Monitor</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; background: #f5f5f0; color: #1a1a1a; }
+a { color: inherit; text-decoration: none; }
+
+/* Topbar */
+.topbar { background: #fff; border-bottom: 1px solid #e5e5e0; padding: 0 24px; display: flex; align-items: stretch; justify-content: space-between; position: sticky; top: 0; z-index: 10; height: 52px; }
+.topbar-left { display: flex; align-items: center; gap: 20px; }
+.logo { font-size: 15px; font-weight: 600; }
+.tabs { display: flex; align-items: stretch; }
+.tab { font-size: 13px; padding: 0 14px; border: none; background: transparent; cursor: pointer; color: #888; border-bottom: 2px solid transparent; height: 52px; }
+.tab:hover { color: #333; }
+.tab.on { color: #185FA5; border-bottom-color: #185FA5; font-weight: 500; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.upd-time { font-size: 12px; color: #aaa; }
+.countdown { font-size: 12px; color: #ef9f27; display: none; }
+.listener-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; display: none; }
+.listener-badge.running      { background: #e8f5e9; color: #2e7d32; }
+.listener-badge.reconnecting { background: #fff3e0; color: #e65100; }
+.listener-badge.error        { background: #fde8e8; color: #c62828; }
+.btn { font-size: 13px; padding: 6px 14px; border-radius: 8px; border: 1px solid #d0d0c8; background: #fff; cursor: pointer; color: #333; white-space: nowrap; }
+.btn:hover { background: #f5f5f0; }
+.btn.primary { background: #185FA5; color: #fff; border-color: #185FA5; }
+.btn.primary:hover { background: #0f4a8a; }
+.btn.success { background: #4caf50; color: #fff; border-color: #4caf50; }
+.btn.danger  { color: #e53935; border-color: #f5c6c6; }
+.btn.danger:hover  { background: #fde8e8; }
+.btn.sm { font-size: 12px; padding: 4px 10px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* Layout */
+.container { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+.page { display: none; }
+.page.on { display: block; }
+
+/* Stats */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.stat { background: #fff; border-radius: 10px; padding: 12px 16px; border: 1px solid #e5e5e0; }
+.stat p { font-size: 11px; color: #888; margin-bottom: 4px; }
+.stat span { font-size: 22px; font-weight: 600; }
+
+/* Dashboard layout */
+.layout { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: start; }
+.sidebar { background: #fff; border-radius: 10px; border: 1px solid #e5e5e0; padding: 14px; position: sticky; top: 68px; }
+.sidebar h3 { font-size: 11px; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+.filter-group { margin-bottom: 14px; }
+.chip { display: block; width: 100%; text-align: left; font-size: 13px; padding: 6px 10px; border-radius: 7px; border: none; background: transparent; cursor: pointer; color: #444; }
+.chip:hover { background: #f5f5f0; }
+.chip.on { background: #EAF1FB; color: #185FA5; font-weight: 500; }
+.chip-count { float: right; font-size: 11px; color: #aaa; background: #f0f0ec; border-radius: 10px; padding: 1px 6px; }
+.chip.on .chip-count { background: #c5d9f0; color: #185FA5; }
+.src-mini { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid #f0f0ec; }
+.src-mini:last-child { border-bottom: none; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: #4caf50; }
+
+/* News cards */
+.news-list { display: flex; flex-direction: column; gap: 8px; }
+.card { background: #fff; border-radius: 10px; border: 1px solid #e5e5e0; padding: 13px 15px; transition: border-color .15s; }
+.card:hover { border-color: #b0c8e8; }
+.card.hi { border-left: 3px solid #e53935; border-radius: 0 10px 10px 0; }
+.card.urgent-kw { border-left: 3px solid #ef9f27; border-radius: 0 10px 10px 0; }
+.card.hi.urgent-kw { border-left: 3px solid #e53935; }
+.card.read { opacity: .45; }
+.card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 7px; }
+.badges { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; flex: 1; min-width: 0; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+.b-tg     { background: #e1f5ee; color: #085041; }
+.b-rss    { background: #e6f1fb; color: #0c447c; }
+.b-dup    { background: #f0f0ec; color: #888; border: 1px solid #e0e0d8; }
+.b-read   { background: #f0f0ec; color: #aaa; }
+.b-kw     { background: #fff3e0; color: #e65100; }
+.b-kw-urg { background: #fff3e0; color: #e65100; font-weight: 600; }
+.b-new    { background: #e8f5e9; color: #2e7d32; }
+.card-meta { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.card-time { font-size: 11px; color: #aaa; white-space: nowrap; }
+.dismiss-btn, .send-btn { width: 22px; height: 22px; border-radius: 5px; border: 1px solid #e5e5e0; background: #fff; cursor: pointer; color: #bbb; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.dismiss-btn:hover { background: #fde8e8; border-color: #f5c6c6; color: #e53935; }
+.card.read .dismiss-btn { color: #4caf50; border-color: #c8e6c9; }
+.send-btn:hover { background: #e3f2fd; border-color: #90caf9; color: #185FA5; }
+.send-btn.sent { color: #4caf50; border-color: #c8e6c9; }
+.card-title { font-size: 13px; font-weight: 600; line-height: 1.45; margin-bottom: 5px; }
+.card-summary { font-size: 12px; color: #555; line-height: 1.6; margin-bottom: 9px; }
+.card-footer { display: flex; align-items: center; justify-content: space-between; }
+.imp-wrap { display: flex; align-items: center; gap: 5px; }
+.imp-dots { display: flex; gap: 2px; }
+.imp-d { width: 7px; height: 7px; border-radius: 2px; }
+.imp-num { font-size: 12px; font-weight: 600; }
+.read-link { font-size: 12px; color: #185FA5; }
+.read-link:hover { text-decoration: underline; }
+.empty { text-align: center; padding: 40px; color: #aaa; font-size: 13px; line-height: 1.7; }
+
+/* Progress */
+.progress-box { background: #fff; border-radius: 10px; border: 1px solid #e5e5e0; padding: 14px 16px; margin-bottom: 10px; display: none; }
+.progress-label { font-size: 12px; color: #555; margin-bottom: 8px; }
+.progress-track { height: 4px; background: #e5e5e0; border-radius: 2px; overflow: hidden; }
+.progress-fill  { height: 100%; background: #185FA5; border-radius: 2px; width: 0; transition: width .4s; }
+
+/* Listener status */
+.listener-status-box { border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.listener-status-box.running      { background: #e8f5e9; border: 1px solid #c8e6c9; color: #2e7d32; display: none !important; }
+.listener-status-box.reconnecting { background: #fff3e0; border: 1px solid #ffe0b2; color: #e65100; }
+.listener-status-box.error        { background: #fde8e8; border: 1px solid #ffcdd2; color: #c62828; }
+.listener-status-box.stopped      { display: none !important; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.pulse.green  { background: #4caf50; animation: blink 2s infinite; }
+.pulse.orange { background: #ef9f27; animation: blink 1s infinite; }
+.pulse.red    { background: #e53935; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* Panel */
+.panel { background: #fff; border-radius: 12px; border: 1px solid #e5e5e0; overflow: hidden; margin-bottom: 20px; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #f0f0ec; }
+.panel-title  { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.panel-count  { font-size: 12px; font-weight: 400; color: #aaa; }
+
+/* Table */
+.src-table { width: 100%; border-collapse: collapse; }
+.src-table th { font-size: 11px; color: #aaa; font-weight: 500; text-align: left; padding: 8px 18px; border-bottom: 1px solid #f0f0ec; text-transform: uppercase; letter-spacing: .4px; }
+.src-table td { padding: 11px 18px; border-bottom: 1px solid #f8f8f5; vertical-align: middle; }
+.src-table tr:last-child td { border-bottom: none; }
+.src-table tr:hover td { background: #fafaf8; }
+.row-name { font-size: 13px; font-weight: 500; }
+.row-sub  { font-size: 12px; color: #888; margin-top: 2px; word-break: break-all; }
+.toggle { width: 36px; height: 20px; border-radius: 10px; border: none; cursor: pointer; position: relative; transition: background .2s; flex-shrink: 0; }
+.toggle.on  { background: #185FA5; }
+.toggle.off { background: #d0d0c8; }
+.toggle::after { content: ''; position: absolute; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .2s; }
+.toggle.on::after  { left: 19px; }
+.toggle.off::after { left: 3px; }
+.del-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #f5c6c6; background: #fff; color: #e53935; cursor: pointer; font-size: 13px; }
+.del-btn:hover { background: #fde8e8; }
+
+/* Add form */
+.add-form { padding: 14px 18px; background: #fafaf8; border-top: 1px solid #f0f0ec; display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 11px; color: #888; font-weight: 500; text-transform: uppercase; letter-spacing: .3px; }
+.field input, .field select, .field textarea { font-size: 13px; padding: 6px 10px; border: 1px solid #d0d0c8; border-radius: 7px; background: #fff; color: #1a1a1a; outline: none; }
+.field input:focus, .field select:focus, .field textarea:focus { border-color: #185FA5; }
+.w-sm { width: 90px; }
+.w-md { width: 160px; }
+.w-lg { width: 280px; }
+
+/* Settings */
+.stabs { display: flex; border-bottom: 1px solid #f0f0ec; padding: 0 18px; flex-wrap: wrap; }
+.stab { font-size: 13px; padding: 10px 14px 9px; border: none; background: transparent; cursor: pointer; color: #888; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.stab:hover { color: #333; }
+.stab.on { color: #185FA5; border-bottom-color: #185FA5; font-weight: 500; }
+.stab-panel { display: none; }
+.stab-panel.on { display: block; }
+.setting-section { padding: 18px; border-bottom: 1px solid #f0f0ec; }
+.setting-section:last-child { border-bottom: none; }
+.setting-section-title { font-size: 13px; font-weight: 600; margin-bottom: 14px; color: #555; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.setting-row { display: flex; flex-direction: column; gap: 5px; }
+.setting-row label { font-size: 12px; color: #888; font-weight: 500; }
+.setting-row input, .setting-row select, .setting-row textarea { font-size: 13px; padding: 7px 10px; border: 1px solid #d0d0c8; border-radius: 7px; outline: none; background: #fff; color: #1a1a1a; }
+.setting-row input:focus, .setting-row select:focus, .setting-row textarea:focus { border-color: #185FA5; }
+.setting-row input[type=number] { width: 100px; }
+.setting-row textarea { resize: vertical; min-height: 80px; }
+.setting-hint { font-size: 11px; color: #aaa; }
+.setting-hint.ok  { color: #4caf50; }
+.setting-hint.err { color: #e53935; }
+.setting-toggle-row { display: flex; align-items: center; justify-content: space-between; }
+.setting-toggle-label { font-size: 14px; font-weight: 500; }
+.setting-toggle-desc  { font-size: 12px; color: #888; margin-top: 2px; }
+.big-toggle { width: 44px; height: 24px; border-radius: 12px; border: none; cursor: pointer; position: relative; transition: background .2s; flex-shrink: 0; }
+.big-toggle.on  { background: #185FA5; }
+.big-toggle.off { background: #d0d0c8; }
+.big-toggle::after { content: ''; position: absolute; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .2s; }
+.big-toggle.on::after  { left: 23px; }
+.big-toggle.off::after { left: 3px; }
+.cat-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.save-bar { padding: 14px 18px; background: #fafaf8; border-top: 1px solid #f0f0ec; display: flex; gap: 10px; align-items: center; }
+
+/* Telegram Auth block */
+.tg-auth-box { background: #f8faff; border: 1px solid #d0e4f7; border-radius: 10px; padding: 16px 18px; margin-top: 14px; }
+.tg-auth-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: #185FA5; }
+.tg-auth-status { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; }
+.tg-auth-status.authorized   { background: #e8f5e9; color: #2e7d32; }
+.tg-auth-status.unauthorized { background: #fde8e8; color: #c62828; }
+.tg-auth-step { display: none; }
+.tg-auth-step.on { display: block; }
+.auth-input-row { display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.auth-input-row input { flex: 1; font-size: 13px; padding: 7px 10px; border: 1px solid #d0d0c8; border-radius: 7px; outline: none; }
+.auth-input-row input:focus { border-color: #185FA5; }
+
+/* Toast */
+.toast { position: fixed; bottom: 24px; right: 24px; background: #1a1a1a; color: #fff; font-size: 13px; padding: 10px 18px; border-radius: 8px; z-index: 999; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 320px; }
+.toast.show { opacity: 1; }
+
+@media (max-width: 700px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .settings-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">News Monitor</span>
+    <div class="tabs">
+      <button class="tab on" data-page="dashboard">Дашборд</button>
+      <button class="tab" data-page="sources">Джерела</button>
+      <button class="tab" data-page="settings">Налаштування</button>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="upd-time" id="upd-time"></span>
+    <span class="countdown" id="countdown"></span>
+    <span class="listener-badge" id="listener-badge"></span>
+    <button class="btn primary" id="fetch-btn" onclick="triggerFetch()">Зібрати новини</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ═══ ДАШБОРД ═══ -->
+<div class="container page on" id="page-dashboard">
+  <div class="stats">
+    <div class="stat"><p>Всього новин</p><span id="s-total">—</span></div>
+    <div class="stat"><p>Важливих (8+)</p><span id="s-high" style="color:#e53935">—</span></div>
+    <div class="stat"><p>Ключових слів</p><span id="s-kw" style="color:#e65100">—</span></div>
+    <div class="stat"><p>Нових з останнього збору</p><span id="s-new" style="color:#2e7d32">—</span></div>
+  </div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="filter-group">
+        <h3>Показати</h3>
+        <button class="chip on" data-f="unread">Непрочитані <span class="chip-count" id="cnt-unread">0</span></button>
+        <button class="chip" data-f="all">Всі <span class="chip-count" id="cnt-all">0</span></button>
+        <button class="chip" data-f="read">Прочитані <span class="chip-count" id="cnt-read">0</span></button>
+        <button class="chip" data-f="high">Важливі 8+ <span class="chip-count" id="cnt-high">0</span></button>
+        <button class="chip" data-f="keywords">Ключові слова <span class="chip-count" id="cnt-kw">0</span></button>
+        <button class="chip" data-f="new">Нові <span class="chip-count" id="cnt-new">0</span></button>
+      </div>
+      <div class="filter-group">
+        <h3>Тип</h3>
+        <button class="chip" data-f="telegram">Telegram <span class="chip-count" id="cnt-tg">0</span></button>
+        <button class="chip" data-f="rss">Веб-сайти <span class="chip-count" id="cnt-rss">0</span></button>
+      </div>
+      <div class="filter-group">
+        <h3>Категорія</h3>
+        <div id="cat-chips"></div>
+      </div>
+      <div class="filter-group">
+        <h3>Джерела</h3>
+        <div id="src-list"></div>
+      </div>
+      <button class="btn sm" style="width:100%;margin-top:4px" onclick="clearRead()">Скинути прочитані</button>
+    </div>
+    <div>
+      <div class="listener-status-box stopped" id="listener-status-box"></div>
+      <div class="progress-box" id="progress-box">
+        <div class="progress-label" id="progress-msg">Збираємо новини...</div>
+        <div class="progress-track"><div class="progress-fill" id="prog"></div></div>
+      </div>
+      <div class="news-list" id="list">
+        <div class="empty">Натисніть "Зібрати новини" для першого запуску</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ ДЖЕРЕЛА ═══ -->
+<div class="container page" id="page-sources">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><span class="badge b-rss">RSS</span> Веб-сайти <span class="panel-count" id="rss-count"></span></div>
+    </div>
+    <table class="src-table">
+      <thead><tr><th>Назва</th><th>URL стрічки</th><th style="width:70px">Активне</th><th style="width:44px"></th></tr></thead>
+      <tbody id="rss-tbody"></tbody>
+    </table>
+    <div class="add-form" id="rss-form">
+      <div class="field"><label>Назва</label><input type="text" class="w-md src-inp-name" placeholder="Назва сайту"></div>
+      <div class="field"><label>URL RSS стрічки</label><input type="text" class="w-lg src-inp-url" placeholder="https://site.ua/rss/feed.xml"></div>
+      <button class="btn primary" onclick="addSource('rss', this.closest('.add-form'))">+ Додати</button>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><span class="badge b-tg">Telegram</span> Канали <span class="panel-count" id="tg-count"></span></div>
+    </div>
+    <table class="src-table">
+      <thead><tr><th>Назва</th><th>Посилання</th><th style="width:70px">Активне</th><th style="width:44px"></th></tr></thead>
+      <tbody id="tg-tbody"></tbody>
+    </table>
+    <div class="add-form" id="tg-form">
+      <div class="field"><label>Назва</label><input type="text" class="w-md src-inp-name" placeholder="Назва каналу"></div>
+      <div class="field"><label>@username або посилання</label><input type="text" class="w-lg src-inp-url" placeholder="@username або https://t.me/username"></div>
+      <button class="btn primary" onclick="addSource('telegram', this.closest('.add-form'))">+ Додати</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ НАЛАШТУВАННЯ ═══ -->
+<div class="container page" id="page-settings">
+  <div class="panel">
+    <div class="stabs">
+      <button class="stab on" data-stab="general">Загальні</button>
+      <button class="stab" data-stab="telegram-auth">Telegram</button>
+      <button class="stab" data-stab="bot">Bot сповіщення</button>
+      <button class="stab" data-stab="categories">Категорії</button>
+      <button class="stab" data-stab="keywords">Ключові слова</button>
+    </div>
+
+    <!-- Загальні -->
+    <div class="stab-panel on" id="stab-general">
+      <div class="setting-section">
+        <div class="setting-toggle-row">
+          <div>
+            <div class="setting-toggle-label">AI-аналіз (Claude)</div>
+            <div class="setting-toggle-desc">Підсумок, категорія та оцінка важливості для кожної новини</div>
+          </div>
+          <button class="big-toggle off" id="ai-toggle"
+            onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-section-title">Модель AI та пріоритети</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Claude модель</label>
+            <select id="set-ai-model">
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5 — швидко і дешево</option>
+              <option value="claude-sonnet-4-6">Sonnet 4.6 — оптимальна якість</option>
+              <option value="claude-opus-4-6">Opus 4.6 — найвища якість</option>
+            </select>
+          </div>
+        </div>
+        <div class="setting-row" style="margin-top:14px">
+          <label>Персональні пріоритети для оцінки важливості</label>
+          <textarea id="set-priorities" placeholder="Опишіть що важливо для вас. Наприклад: новини про Львів мають вищий пріоритет; силові структури і правоохоронці важливіші за загальні новини; прес-релізи та вітання оцінювати низько..."></textarea>
+          <div class="setting-hint">Claude враховує ці пріоритети при оцінці важливості 1-10</div>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-section-title">Anthropic API</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>API ключ</label>
+            <input type="password" id="set-api-key" placeholder="sk-ant-...">
+            <div class="setting-hint" id="api-key-hint"></div>
+          </div>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-section-title">Збір новин</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Новин з кожного RSS сайту</label>
+            <input type="number" id="set-rss-depth" min="1" max="100" value="10">
+          </div>
+          <div class="setting-row">
+            <label>Повідомлень з Telegram (пакетний режим)</label>
+            <input type="number" id="set-tg-depth" min="1" max="100" value="10">
+          </div>
+          <div class="setting-row">
+            <label>Автозбір RSS: інтервал у хвилинах (0 = вимкнено)</label>
+            <input type="number" id="set-auto-interval" min="0" max="1440" value="0">
+            <div class="setting-hint">Рекомендовано: 15–30 хв</div>
+          </div>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-toggle-row">
+          <div>
+            <div class="setting-toggle-label">Слухач Telegram (реальний час)</div>
+            <div class="setting-toggle-desc">Нові повідомлення з'являються миттєво. Потребує окремого запуску listener.py</div>
+          </div>
+          <button class="big-toggle off" id="listener-toggle"
+            onclick="toggleListenerSetting(this)"></button>
+        </div>
+        <div id="listener-info" style="margin-top:12px;font-size:12px;color:#888;display:none;line-height:1.7">
+          Запустіть на Pi як сервіс або в окремому терміналі:<br>
+          <code style="background:#f0f0ec;padding:2px 8px;border-radius:4px;font-size:12px">python3 listener.py</code>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-section-title">Зберігання</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Зберігати новини за останні N днів</label>
+            <input type="number" id="set-keep-days" min="1" max="365" value="14">
+          </div>
+          <div class="setting-row">
+            <label>Максимум новин у стрічці</label>
+            <input type="number" id="set-max-items" min="50" max="5000" value="500">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telegram авторизація -->
+    <div class="stab-panel" id="stab-telegram-auth">
+      <div class="setting-section">
+        <div class="setting-section-title">Telegram API</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>API ID</label>
+            <input type="text" id="set-tg-id" placeholder="12345678">
+            <div class="setting-hint">my.telegram.org → API development tools</div>
+          </div>
+          <div class="setting-row">
+            <label>API Hash</label>
+            <input type="password" id="set-tg-hash" placeholder="••••••••••••••••">
+            <div class="setting-hint" id="tg-hash-hint"></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:#888">
+          Збережіть API ID та Hash перш ніж авторизуватись.
+        </div>
+      </div>
+
+      <div class="setting-section">
+        <div class="setting-section-title">Авторизація облікового запису</div>
+
+        <!-- Статус поточної сесії -->
+        <div id="tg-session-status" style="margin-bottom:14px">
+          <div style="font-size:13px;color:#888">Перевіряємо статус...</div>
+        </div>
+
+        <!-- Форма авторизації -->
+        <div class="tg-auth-box" id="tg-auth-box">
+          <div class="tg-auth-title">Авторизація в Telegram</div>
+
+          <!-- Крок 1: номер телефону -->
+          <div class="tg-auth-step on" id="tg-step-phone">
+            <div style="font-size:12px;color:#555;margin-bottom:8px">Введіть номер телефону у форматі +380...</div>
+            <div class="auth-input-row">
+              <input type="tel" id="tg-phone-input" placeholder="+380501234567">
+              <button class="btn primary" onclick="tgSendCode()">Надіслати код</button>
+            </div>
+            <div class="setting-hint" id="tg-phone-hint" style="margin-top:6px"></div>
+          </div>
+
+          <!-- Крок 2: код підтвердження -->
+          <div class="tg-auth-step" id="tg-step-code">
+            <div style="font-size:12px;color:#555;margin-bottom:8px">Код надіслано в Telegram. Введіть його:</div>
+            <div class="auth-input-row">
+              <input type="text" id="tg-code-input" placeholder="12345" maxlength="6">
+              <button class="btn primary" onclick="tgSignIn()">Підтвердити</button>
+              <button class="btn" onclick="tgReset()">Назад</button>
+            </div>
+            <div class="setting-hint" id="tg-code-hint" style="margin-top:6px"></div>
+          </div>
+
+          <!-- Крок 3: 2FA пароль -->
+          <div class="tg-auth-step" id="tg-step-password">
+            <div style="font-size:12px;color:#555;margin-bottom:8px">Ваш акаунт захищений двофакторною авторизацією. Введіть пароль:</div>
+            <div class="auth-input-row">
+              <input type="password" id="tg-password-input" placeholder="Пароль 2FA">
+              <button class="btn primary" onclick="tgSignInWithPassword()">Увійти</button>
+              <button class="btn" onclick="tgReset()">Назад</button>
+            </div>
+            <div class="setting-hint" id="tg-pass-hint" style="margin-top:6px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bot сповіщення -->
+    <div class="stab-panel" id="stab-bot">
+      <div class="setting-section">
+        <div class="setting-section-title">Telegram Bot</div>
+        <div style="font-size:12px;color:#888;margin-bottom:14px;line-height:1.6">
+          1. Напишіть <b>@BotFather</b> команду <code>/newbot</code><br>
+          2. Отримайте токен бота<br>
+          3. Додайте бота в чат/канал куди надсилати сповіщення<br>
+          4. Chat ID групи починається з <b>-</b>
+        </div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Bot Token</label>
+            <input type="password" id="set-bot-token" placeholder="1234567890:ABCdef...">
+            <div class="setting-hint" id="bot-token-hint"></div>
+          </div>
+          <div class="setting-row">
+            <label>Chat ID</label>
+            <input type="text" id="set-bot-chat-id" placeholder="-1001234567890">
+            <div class="setting-hint">Група, канал або особистий чат</div>
+          </div>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div style="margin-bottom:14px">
+          <div class="setting-toggle-row">
+            <div>
+              <div class="setting-toggle-label">Щоденний дайджест</div>
+              <div class="setting-toggle-desc">Автоматична відправка топ новин в заданий час</div>
+            </div>
+            <button class="big-toggle off" id="digest-toggle"
+              onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
+          </div>
+        </div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Час відправки</label>
+            <input type="time" id="set-digest-time" value="09:00">
+          </div>
+          <div class="setting-row">
+            <label>Кількість новин у дайджесті</label>
+            <input type="number" id="set-digest-count" min="1" max="20" value="5">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Категорії -->
+    <div class="stab-panel" id="stab-categories">
+      <div class="setting-section">
+        <div style="font-size:12px;color:#888;margin-bottom:14px">
+          Категорії передаються Claude для класифікації новин. Додайте власні категорії під ваш моніторинг.
+          Поки немає категорій — AI аналіз категоризації недоступний.
+        </div>
+        <table class="src-table">
+          <thead><tr><th style="width:32px"></th><th>Назва</th><th style="width:80px">Колір</th><th style="width:44px"></th></tr></thead>
+          <tbody id="cat-tbody"></tbody>
+        </table>
+      </div>
+      <div class="add-form" id="cat-form">
+        <div class="field"><label>Назва категорії</label><input type="text" class="w-md src-inp-name" placeholder="Наприклад: Політика"></div>
+        <div class="field"><label>Колір</label><input type="color" value="#185FA5" class="src-inp-color" style="width:44px;height:32px;padding:2px;border-radius:7px;border:1px solid #d0d0c8;cursor:pointer"></div>
+        <button class="btn primary" onclick="addCategory(this.closest('.add-form'))">+ Додати</button>
+      </div>
+    </div>
+
+    <!-- Ключові слова -->
+    <div class="stab-panel" id="stab-keywords">
+      <div class="setting-section">
+        <div style="font-size:12px;color:#888;margin-bottom:14px">
+          Перевіряється при кожному зборі незалежно від AI.
+          При спрацюванні — бейдж на картці і сповіщення в Bot (якщо налаштовано).
+        </div>
+        <table class="src-table">
+          <thead><tr><th>Фраза</th><th style="width:110px">Тип</th><th style="width:44px"></th></tr></thead>
+          <tbody id="kw-tbody"></tbody>
+        </table>
+      </div>
+      <div class="add-form" id="kw-form">
+        <div class="field"><label>Фраза або слово</label><input type="text" class="w-lg src-inp-phrase" placeholder="Наприклад: Львів, вибух, рішення суду..."></div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:6px;padding-top:18px">
+          <input type="checkbox" id="kw-urgent" style="width:16px;height:16px;cursor:pointer">
+          <label for="kw-urgent" style="font-size:13px;color:#444;cursor:pointer;text-transform:none;letter-spacing:0">Терміново (⚠️)</label>
+        </div>
+        <button class="btn primary" onclick="addKeyword(this.closest('.add-form'))">+ Додати</button>
+      </div>
+    </div>
+
+    <div class="save-bar">
+      <button class="btn primary" onclick="saveSettings()">Зберегти налаштування</button>
+      <span style="font-size:12px;color:#aaa">Зміни застосуються при наступному зборі</span>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Стан ─────────────────────────────────────────────────────────────────────
+let allNews        = [];
+let readIds        = new Set();
+let newIds         = new Set();
+let categories     = [];
+let activeFilter   = 'unread';
+let pollTimer      = null;
+let bgPollTimer    = null;
+let countdownTimer = null;
+let lastFinishedAt = null;
+let hasBotToken    = false;
+const kwUrgentMap  = {};
+let settingsCache  = {};
+
+// ── Утиліти ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function slugify(s) {
+  return s.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_а-яёіїєґ]/gi,'');
+}
+function impColor(n) { return n>=8?'#e53935':n>=6?'#ef9f27':'#4caf50'; }
+function impDots(n) {
+  let h='';
+  for(let i=1;i<=10;i++)
+    h+=`<div class="imp-d" style="background:${i<=n?impColor(n):'#e5e5e0'}"></div>`;
+  return h;
+}
+function fmtTime(iso) {
+  if(!iso) return '';
+  try { return new Date(iso).toLocaleString('uk-UA',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+  catch { return ''; }
+}
+function toast(msg, err) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = err ? '#c62828' : '#1a1a1a';
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 3000);
+}
+async function api(url, opts={}) {
+  const r = await fetch(url, { headers:{'Content-Type':'application/json'}, ...opts });
+  return r.json();
+}
+
+// ── Навігація ─────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('on'));
+  t.classList.add('on');
+  document.getElementById('page-' + t.dataset.page).classList.add('on');
+  if (t.dataset.page === 'sources')  loadSources();
+  if (t.dataset.page === 'settings') loadSettings();
+}));
+
+document.querySelectorAll('.stab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.stab').forEach(x => x.classList.remove('on'));
+  document.querySelectorAll('.stab-panel').forEach(x => x.classList.remove('on'));
+  t.classList.add('on');
+  document.getElementById('stab-' + t.dataset.stab).classList.add('on');
+  if (t.dataset.stab === 'telegram-auth') checkTgSession();
+}));
+
+document.querySelectorAll('.chip[data-f]').forEach(c => c.addEventListener('click', () => {
+  document.querySelectorAll('.chip[data-f]').forEach(x => x.classList.remove('on'));
+  c.classList.add('on');
+  activeFilter = c.dataset.f;
+  renderList();
+}));
+
+// ── Listener badge ────────────────────────────────────────────────────────────
+function updateListenerUI(s) {
+  const badge = document.getElementById('listener-badge');
+  const box   = document.getElementById('listener-status-box');
+  if (!s || s.status === 'stopped' || s.status === 'starting') {
+    badge.style.display = 'none';
+    box.className = 'listener-status-box stopped';
+    return;
+  }
+  const map = {
+    running:      { label:'● Слухач активний', cls:'running',       pulse:'green',  text:'' },
+    reconnecting: { label:'↻ Перепідключення', cls:'reconnecting',  pulse:'orange', text:`Перепідключення...${s.error?' ('+s.error+')':''}` },
+    error:        { label:'✕ Помилка слухача', cls:'error',         pulse:'red',    text:`Помилка: ${s.error||'невідома'}` },
+    unknown:      { label:'? Не відповідає',   cls:'error',         pulse:'red',    text:'Слухач не відповідає > 30с' },
+  };
+  const info = map[s.status] || map.unknown;
+  badge.className   = `listener-badge ${info.cls}`;
+  badge.textContent = info.label;
+  badge.style.display = 'inline';
+  box.className = `listener-status-box ${info.cls}`;
+  if (info.text) {
+    box.innerHTML = `<div class="pulse ${info.pulse}"></div><span>${esc(info.text)}</span>`;
+  }
+}
+
+function toggleListenerSetting(btn) {
+  btn.className = 'big-toggle ' + (btn.classList.contains('on') ? 'off' : 'on');
+  document.getElementById('listener-info').style.display =
+    btn.classList.contains('on') ? 'block' : 'none';
+}
+
+// ── Категоріальні чіпи ────────────────────────────────────────────────────────
+function renderCatChips() {
+  const container = document.getElementById('cat-chips');
+  container.innerHTML = '';
+  if (!categories.length) {
+    container.innerHTML = '<div style="font-size:12px;color:#bbb;padding:4px 0">Категорій немає</div>';
+    return;
+  }
+  categories.forEach(cat => {
+    const count = allNews.filter(n => n.category === cat.id).length;
+    const btn = document.createElement('button');
+    btn.className = 'chip' + (activeFilter === cat.id ? ' on' : '');
+    btn.dataset.f = cat.id;
+    btn.innerHTML =
+      `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${esc(cat.color)};margin-right:5px"></span>`+
+      esc(cat.name)+`<span class="chip-count">${count}</span>`;
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.chip[data-f]').forEach(x => x.classList.remove('on'));
+      btn.classList.add('on');
+      activeFilter = cat.id;
+      renderList();
+    });
+    container.appendChild(btn);
+  });
+}
+
+// ── Рендер стрічки ────────────────────────────────────────────────────────────
+function getCatInfo(id) {
+  return categories.find(c => c.id === id) || {name: id || '—', color: '#888'};
+}
+
+function filterNews() {
+  return allNews.filter(n => {
+    const isRead = readIds.has(n.id);
+    const isNew  = newIds.has(n.id);
+    switch(activeFilter) {
+      case 'unread':   return !isRead;
+      case 'read':     return isRead;
+      case 'all':      return true;
+      case 'high':     return n.importance >= 8;
+      case 'telegram': return n.type === 'telegram';
+      case 'rss':      return n.type === 'rss';
+      case 'keywords': return n.matched_keywords && n.matched_keywords.length > 0;
+      case 'new':      return isNew;
+      default:         return n.category === activeFilter;
+    }
+  });
+}
+
+function renderList() {
+  const filtered = filterNews();
+  const list = document.getElementById('list');
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty">Немає новин за цим фільтром</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  filtered.forEach(n => {
+    const isRead   = readIds.has(n.id);
+    const isNew    = newIds.has(n.id);
+    const cat      = getCatInfo(n.category);
+    const hasKw    = n.matched_keywords && n.matched_keywords.length > 0;
+    const urgentKw = hasKw && n.matched_keywords.some(kw => kwUrgentMap[kw.toLowerCase()]);
+
+    const card = document.createElement('div');
+    card.id = 'card-' + n.id;
+    const cls = ['card'];
+    if (n.importance >= 8) cls.push('hi');
+    else if (urgentKw) cls.push('urgent-kw');
+    if (isRead) cls.push('read');
+    card.className = cls.join(' ');
+
+    const kwBadges = hasKw ? n.matched_keywords.map(kw => {
+      const u = kwUrgentMap[kw.toLowerCase()];
+      return `<span class="badge ${u?'b-kw-urg':'b-kw'}">${u?'⚠️ ':''} ${esc(kw)}</span>`;
+    }).join('') : '';
+
+    const catBadge = n.category
+      ? `<span class="badge" style="background:${cat.color}22;color:${cat.color}">${esc(cat.name)}</span>`
+      : '';
+
+    card.innerHTML = `
+      <div class="card-top">
+        <div class="badges">
+          <span class="badge ${n.type==='telegram'?'b-tg':'b-rss'}">${n.type==='telegram'?'Telegram':'RSS'}</span>
+          <span style="font-size:12px;color:#888">${esc(n.source)}</span>
+          ${catBadge}
+          ${n.is_duplicate?'<span class="badge b-dup">Дублікат</span>':''}
+          ${isNew?'<span class="badge b-new">Нова</span>':''}
+          ${isRead?'<span class="badge b-read">Прочитано</span>':''}
+          ${kwBadges}
+        </div>
+        <div class="card-meta">
+          <span class="card-time">${fmtTime(n.time)}</span>
+          ${hasBotToken?`<button class="send-btn" title="Надіслати в Telegram">✈</button>`:''}
+          <button class="dismiss-btn" title="${isRead?'Відновити':'Прочитано'}">${isRead?'↩':'✓'}</button>
+        </div>
+      </div>
+      <div class="card-title">${esc(n.title)}</div>
+      ${n.summary?`<div class="card-summary">${esc(n.summary)}</div>`:''}
+      <div class="card-footer">
+        <div class="imp-wrap">
+          <div class="imp-dots">${impDots(n.importance)}</div>
+          <span class="imp-num" style="color:${impColor(n.importance)}">${n.importance}/10</span>
+        </div>
+        ${n.url?`<a class="read-link" href="${esc(n.url)}" target="_blank" rel="noopener">Читати →</a>`:''}
+      </div>`;
+
+    card.querySelector('.dismiss-btn').addEventListener('click', () => toggleRead(n.id, isRead));
+    if (hasBotToken) {
+      card.querySelector('.send-btn').addEventListener('click', function() { sendNews(n.id, this); });
+    }
+    frag.appendChild(card);
+  });
+  list.innerHTML = '';
+  list.appendChild(frag);
+}
+
+function updateCounts() {
+  const total   = allNews.length;
+  const readCnt = allNews.filter(n => readIds.has(n.id)).length;
+  const newCnt  = allNews.filter(n => newIds.has(n.id)).length;
+  const high    = allNews.filter(n => n.importance >= 8).length;
+  const kwCnt   = allNews.filter(n => n.matched_keywords && n.matched_keywords.length).length;
+
+  document.getElementById('s-total').textContent = total;
+  document.getElementById('s-high').textContent  = high;
+  document.getElementById('s-kw').textContent    = kwCnt;
+  document.getElementById('s-new').textContent   = newCnt;
+
+  document.getElementById('cnt-all').textContent    = total;
+  document.getElementById('cnt-unread').textContent = total - readCnt;
+  document.getElementById('cnt-read').textContent   = readCnt;
+  document.getElementById('cnt-high').textContent   = high;
+  document.getElementById('cnt-kw').textContent     = kwCnt;
+  document.getElementById('cnt-new').textContent    = newCnt;
+  document.getElementById('cnt-tg').textContent     = allNews.filter(n=>n.type==='telegram').length;
+  document.getElementById('cnt-rss').textContent    = allNews.filter(n=>n.type==='rss').length;
+}
+
+function renderSidebarSrc() {
+  const map = {};
+  allNews.forEach(n => {
+    if (!map[n.source_id]) map[n.source_id] = {name:n.source, type:n.type, count:0};
+    map[n.source_id].count++;
+  });
+  document.getElementById('src-list').innerHTML = Object.values(map).map(s => `
+    <div class="src-mini">
+      <div class="dot"></div>
+      <div style="min-width:0">
+        <div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</div>
+        <div style="font-size:11px;color:#aaa">${s.type==='telegram'?'Telegram':'RSS'} · ${s.count}</div>
+      </div>
+    </div>`).join('') || '<div style="font-size:12px;color:#bbb;padding:4px 0">Немає новин</div>';
+}
+
+async function loadNews() {
+  try {
+    const r = await fetch('/api/news');
+    if (r.status === 404) {
+      document.getElementById('list').innerHTML =
+        '<div class="empty">Ще немає даних.<br>Натисніть "Зібрати новини".</div>';
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    allNews = data.items || [];
+    const newCount = data.new_count || 0;
+    newIds = new Set(allNews.slice(0, newCount).map(n => n.id));
+    document.getElementById('upd-time').textContent = fmtTime(data.updated_at);
+    updateCounts();
+    renderSidebarSrc();
+    renderCatChips();
+    renderList();
+  } catch {
+    document.getElementById('list').innerHTML =
+      '<div class="empty">Сервер не відповідає.<br>Переконайтесь що server.py запущений.</div>';
+  }
+}
+
+// ── Прочитані ─────────────────────────────────────────────────────────────────
+async function toggleRead(id, currentlyRead) {
+  try {
+    await api(currentlyRead ? '/api/news/unread' : '/api/news/read',
+      {method:'POST', body:JSON.stringify({id})});
+    if (currentlyRead) readIds.delete(id);
+    else               readIds.add(id);
+    updateCounts();
+    if (activeFilter === 'unread' || activeFilter === 'read') {
+      renderList();
+    } else {
+      const card = document.getElementById('card-' + id);
+      if (!card) return;
+      currentlyRead ? card.classList.remove('read') : card.classList.add('read');
+      const btn = card.querySelector('.dismiss-btn');
+      if (btn) { btn.textContent = currentlyRead?'✓':'↩'; btn.title = currentlyRead?'Прочитано':'Відновити'; }
+      const rb = card.querySelector('.b-read');
+      if (currentlyRead && rb) rb.remove();
+      else if (!currentlyRead) {
+        const b = document.createElement('span');
+        b.className='badge b-read'; b.textContent='Прочитано';
+        card.querySelector('.badges').appendChild(b);
+      }
+    }
+  } catch { toast('Помилка збереження', true); }
+}
+
+async function clearRead() {
+  if (!confirm('Скинути всі прочитані?')) return;
+  const d = await api('/api/news/clear_read', {method:'POST', body:'{}'});
+  if (d.ok) { readIds.clear(); updateCounts(); renderList(); toast('Прочитані скинуто'); }
+}
+
+async function sendNews(id, btn) {
+  btn.disabled = true;
+  try {
+    const d = await api('/api/news/send', {method:'POST', body:JSON.stringify({id})});
+    if (d.ok) { btn.classList.add('sent'); btn.title='Надіслано!'; toast('Надіслано в Telegram!'); }
+    else toast(d.error||'Помилка відправки', true);
+  } catch { toast("Помилка з'єднання", true); }
+  btn.disabled = false;
+}
+
+// ── Збір новин ────────────────────────────────────────────────────────────────
+async function triggerFetch() {
+  const btn = document.getElementById('fetch-btn');
+  if (btn.disabled) return;
+  btn.disabled = true; btn.textContent = 'Збираємо...';
+  const box  = document.getElementById('progress-box');
+  const msg  = document.getElementById('progress-msg');
+  const fill = document.getElementById('prog');
+  box.style.display='block'; fill.style.width='5%'; msg.textContent='Запускаємо збір...';
+  try {
+    const d = await api('/api/refresh');
+    if (d.status==='already_running') msg.textContent='Вже виконується...';
+  } catch {
+    msg.textContent='Не вдалося запустити. server.py запущений?';
+    btn.disabled=false; btn.textContent='Зібрати новини'; return;
+  }
+  let dots=0;
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const s = await api('/api/status');
+      dots=(dots+1)%4;
+      const d='.'.repeat(dots+1);
+      if (s.running) {
+        const elapsed = s.started_at?(Date.now()/1000-s.started_at):0;
+        const p = Math.min(5+elapsed*1.1, 88);
+        fill.style.width=Math.round(p)+'%';
+        msg.textContent = p<25?`Читаємо RSS та Telegram${d}`:p<60?`AI аналізує новини${d}`:`Зберігаємо результати${d}`;
+      } else {
+        clearInterval(pollTimer);
+        fill.style.width='100%';
+        msg.textContent = s.error?`Помилка: ${s.error}`:'Готово!';
+        lastFinishedAt = s.finished_at;
+        await loadNews();
+        startCountdown(s.next_fetch_at||null);
+        setTimeout(() => {
+          box.style.display='none'; fill.style.width='0';
+          btn.disabled=false; btn.textContent='Зібрати новини';
+        }, 1800);
+      }
+    } catch { clearInterval(pollTimer); btn.disabled=false; btn.textContent='Зібрати новини'; }
+  }, 3000);
+}
+
+// ── Таймер ────────────────────────────────────────────────────────────────────
+function startCountdown(nextFetchAt) {
+  clearInterval(countdownTimer);
+  const el = document.getElementById('countdown');
+  if (!nextFetchAt) { el.style.display='none'; return; }
+  function tick() {
+    const left = Math.max(0, Math.round(nextFetchAt-Date.now()/1000));
+    if (left===0) { el.textContent='Збираємо...'; return; }
+    const h=Math.floor(left/3600), m=Math.floor((left%3600)/60), s=left%60;
+    const parts=[];
+    if (h>0) parts.push(`${h}г`);
+    parts.push(`${String(m).padStart(2,'0')}хв`);
+    parts.push(`${String(s).padStart(2,'0')}с`);
+    el.textContent=`наступний збір: ${parts.join(' ')}`;
+    el.style.display='inline';
+  }
+  tick();
+  countdownTimer=setInterval(tick,1000);
+}
+
+function startBgPolling() {
+  clearInterval(bgPollTimer);
+  bgPollTimer = setInterval(async () => {
+    try {
+      const s = await api('/api/status');
+      startCountdown(s.next_fetch_at||null);
+      if (!s.running && s.finished_at && s.finished_at!==lastFinishedAt) {
+        lastFinishedAt=s.finished_at;
+        const fetchBtn=document.getElementById('fetch-btn');
+        if (!fetchBtn.disabled) await loadNews();
+      }
+      const ls = await api('/api/listener/status');
+      updateListenerUI(ls);
+    } catch {}
+  }, 5000);
+}
+
+// ── Джерела ───────────────────────────────────────────────────────────────────
+async function loadSources() {
+  try {
+    const data = await api('/api/sources');
+    renderSrcTable('rss',      data.rss      || []);
+    renderSrcTable('telegram', data.telegram || []);
+  } catch { toast('Не вдалося завантажити джерела', true); }
+}
+
+function renderSrcTable(type, list) {
+  const tbody   = document.getElementById(type==='rss'?'rss-tbody':'tg-tbody');
+  const countEl = document.getElementById(type==='rss'?'rss-count':'tg-count');
+  countEl.textContent = `${list.filter(s=>s.enabled).length} з ${list.length} активних`;
+  tbody.innerHTML='';
+  if (!list.length) {
+    tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">Немає джерел. Додайте нижче.</td></tr>`;
+    return;
+  }
+  list.forEach(s => {
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><div class="row-name">${esc(s.name)}</div></td>
+      <td><div class="row-sub">${esc(s.url)}</div></td>
+      <td><button class="toggle ${s.enabled?'on':'off'}"></button></td>
+      <td><button class="del-btn">✕</button></td>`;
+    tr.querySelector('.toggle').addEventListener('click', function() { toggleSrc(type,s.id,this); });
+    tr.querySelector('.del-btn').addEventListener('click', () => delSrc(type,s.id));
+    tbody.appendChild(tr);
+  });
+}
+
+async function toggleSrc(type,id,btn) {
+  btn.disabled=true;
+  try {
+    const d=await api('/api/sources/toggle',{method:'POST',body:JSON.stringify({type,id})});
+    if (d.ok) { toast(d.enabled?'Увімкнено':'Вимкнено'); loadSources(); }
+    else toast(d.error||'Помилка',true);
+  } catch { toast("Помилка з'єднання",true); }
+  btn.disabled=false;
+}
+
+async function delSrc(type,id) {
+  if (!confirm('Видалити це джерело?')) return;
+  try {
+    const d=await api('/api/sources',{method:'DELETE',body:JSON.stringify({type,id})});
+    d.ok?(toast('Видалено'),loadSources()):toast(d.error||'Помилка',true);
+  } catch { toast("Помилка з'єднання",true); }
+}
+
+async function addSource(type,form) {
+  if (!form) { toast('Помилка форми',true); return; }
+  const nameEl=form.querySelector('.src-inp-name');
+  const urlEl =form.querySelector('.src-inp-url');
+  if (!nameEl||!urlEl) { toast('Поля не знайдено',true); return; }
+  const name=nameEl.value.trim();
+  let url=urlEl.value.trim();
+  if (!name||!url) { toast('Заповніть назву та URL',true); return; }
+  if (type==='telegram') {
+    if (url.startsWith('@'))          url='https://t.me/'+url.slice(1);
+    else if (!url.startsWith('http')) url='https://t.me/'+url;
+  }
+  try {
+    const d=await api('/api/sources',{method:'POST',body:JSON.stringify({type,name,url})});
+    if (d.ok) { toast('Джерело додано!'); nameEl.value=''; urlEl.value=''; loadSources(); }
+    else toast(d.error||'Помилка',true);
+  } catch { toast("Помилка з'єднання",true); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key!=='Enter') return;
+  const form=e.target.closest('.add-form');
+  if (!form) return;
+  if (form.id==='rss-form')  addSource('rss',form);
+  if (form.id==='tg-form')   addSource('telegram',form);
+  if (form.id==='cat-form')  addCategory(form);
+  if (form.id==='kw-form')   addKeyword(form);
+});
+
+// ── Telegram авторизація ──────────────────────────────────────────────────────
+let tgCodeForPassword = '';
+
+async function checkTgSession() {
+  const box = document.getElementById('tg-session-status');
+  box.innerHTML = '<div style="font-size:13px;color:#888">Перевіряємо...</div>';
+  try {
+    const d = await api('/api/tg/session');
+    if (d.authorized) {
+      box.innerHTML = `
+        <div class="tg-auth-status authorized">
+          <span>✓ Авторизовано${d.name?' як '+esc(d.name):''}</span>
+        </div>
+        <button class="btn danger sm" onclick="tgLogout()">Вийти з Telegram</button>`;
+      document.getElementById('tg-auth-box').style.display = 'none';
+    } else {
+      box.innerHTML = `<div class="tg-auth-status unauthorized">✕ Не авторизовано${d.error?' — '+esc(d.error):''}</div>`;
+      document.getElementById('tg-auth-box').style.display = 'block';
+      tgReset();
+    }
+  } catch {
+    box.innerHTML = '<div style="font-size:13px;color:#e53935">Помилка перевірки</div>';
+  }
+}
+
+function tgReset() {
+  document.getElementById('tg-step-phone').className    = 'tg-auth-step on';
+  document.getElementById('tg-step-code').className     = 'tg-auth-step';
+  document.getElementById('tg-step-password').className = 'tg-auth-step';
+  document.getElementById('tg-phone-hint').textContent  = '';
+  document.getElementById('tg-code-hint').textContent   = '';
+  document.getElementById('tg-pass-hint').textContent   = '';
+  document.getElementById('tg-code-input').value        = '';
+  document.getElementById('tg-password-input').value    = '';
+}
+
+async function tgSendCode() {
+  const phone = document.getElementById('tg-phone-input').value.trim();
+  const hint  = document.getElementById('tg-phone-hint');
+  if (!phone) { hint.textContent='Введіть номер телефону'; hint.className='setting-hint err'; return; }
+
+  hint.textContent='Надсилаємо код...'; hint.className='setting-hint';
+  try {
+    const d = await api('/api/tg/send_code', {method:'POST', body:JSON.stringify({phone})});
+    if (d.ok) {
+      if (d.already_authorized) {
+        hint.textContent='Вже авторизовано!'; hint.className='setting-hint ok';
+        await checkTgSession();
+      } else {
+        hint.textContent='Код надіслано!'; hint.className='setting-hint ok';
+        document.getElementById('tg-step-phone').className    = 'tg-auth-step';
+        document.getElementById('tg-step-code').className     = 'tg-auth-step on';
+      }
+    } else {
+      hint.textContent = d.error || 'Помилка'; hint.className='setting-hint err';
+    }
+  } catch { hint.textContent="Помилка з'єднання"; hint.className='setting-hint err'; }
+}
+
+async function tgSignIn() {
+  const code = document.getElementById('tg-code-input').value.trim();
+  const hint = document.getElementById('tg-code-hint');
+  if (!code) { hint.textContent='Введіть код'; hint.className='setting-hint err'; return; }
+
+  hint.textContent='Перевіряємо...'; hint.className='setting-hint';
+  try {
+    const d = await api('/api/tg/sign_in', {method:'POST', body:JSON.stringify({code})});
+    if (d.ok) {
+      hint.textContent='Успішно!'; hint.className='setting-hint ok';
+      toast('Авторизація успішна!');
+      await checkTgSession();
+    } else if (d.need_password) {
+      document.getElementById('tg-step-code').className     = 'tg-auth-step';
+      document.getElementById('tg-step-password').className = 'tg-auth-step on';
+    } else {
+      hint.textContent=d.error||'Помилка'; hint.className='setting-hint err';
+    }
+  } catch { hint.textContent="Помилка з'єднання"; hint.className='setting-hint err'; }
+}
+
+async function tgSignInWithPassword() {
+  const pass = document.getElementById('tg-password-input').value.trim();
+  const hint = document.getElementById('tg-pass-hint');
+  if (!pass) { hint.textContent='Введіть пароль'; hint.className='setting-hint err'; return; }
+  const code = document.getElementById('tg-code-input').value.trim();
+
+  hint.textContent='Перевіряємо...'; hint.className='setting-hint';
+  try {
+    const d = await api('/api/tg/sign_in', {method:'POST', body:JSON.stringify({code, password:pass})});
+    if (d.ok) {
+      hint.textContent='Успішно!'; hint.className='setting-hint ok';
+      toast('Авторизація успішна!');
+      await checkTgSession();
+    } else {
+      hint.textContent=d.error||'Невірний пароль'; hint.className='setting-hint err';
+    }
+  } catch { hint.textContent="Помилка з'єднання"; hint.className='setting-hint err'; }
+}
+
+async function tgLogout() {
+  if (!confirm('Вийти з Telegram? Для повторного використання знадобиться авторизація.')) return;
+  const d = await api('/api/tg/logout', {method:'POST', body:'{}'});
+  if (d.ok) { toast('Сесію видалено'); await checkTgSession(); }
+  else toast(d.error||'Помилка',true);
+}
+
+// ── Налаштування ──────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const d = await api('/api/settings');
+    settingsCache = JSON.parse(JSON.stringify(d)); // deep copy
+
+    document.getElementById('ai-toggle').className     = 'big-toggle '+(d.ai_enabled?'on':'off');
+    document.getElementById('set-ai-model').value      = d.ai_model||'claude-haiku-4-5-20251001';
+    document.getElementById('set-priorities').value    = d.importance_priorities||'';
+    document.getElementById('set-rss-depth').value     = d.rss_depth||10;
+    document.getElementById('set-tg-depth').value      = d.tg_depth||10;
+    document.getElementById('set-auto-interval').value = d.auto_fetch_interval||0;
+    document.getElementById('set-keep-days').value     = d.keep_days||14;
+    document.getElementById('set-max-items').value     = d.max_items||500;
+    document.getElementById('set-tg-id').value         = d.telegram_api_id||'';
+    document.getElementById('set-bot-chat-id').value   = d.bot_chat_id||'';
+    document.getElementById('digest-toggle').className = 'big-toggle '+(d.digest_enabled?'on':'off');
+    document.getElementById('set-digest-time').value   = d.digest_time||'09:00';
+    document.getElementById('set-digest-count').value  = d.digest_count||5;
+
+    const listenerOn = d.listener_enabled||false;
+    document.getElementById('listener-toggle').className   = 'big-toggle '+(listenerOn?'on':'off');
+    document.getElementById('listener-info').style.display = listenerOn?'block':'none';
+
+    document.getElementById('api-key-hint').textContent   = d.has_anthropic_key?'✓ Ключ збережено':'Не вказано';
+    document.getElementById('tg-hash-hint').textContent   = d.has_telegram_hash?'✓ Hash збережено':'Не вказано';
+    document.getElementById('bot-token-hint').textContent = d.has_bot_token?'✓ Токен збережено':'Не вказано';
+
+    categories = d.categories||[];
+    Object.keys(kwUrgentMap).forEach(k=>delete kwUrgentMap[k]);
+    (d.keywords||[]).forEach(kw=>{ kwUrgentMap[kw.phrase.toLowerCase()]=kw.urgent; });
+    hasBotToken = d.has_bot_token||false;
+
+    settingsCache.categories = d.categories ? JSON.parse(JSON.stringify(d.categories)) : [];
+    settingsCache.keywords   = d.keywords   ? JSON.parse(JSON.stringify(d.keywords))   : [];
+
+    renderCatTable(settingsCache.categories);
+    renderKwTable(settingsCache.keywords);
+    renderCatChips();
+
+    try {
+      const s=await api('/api/status');
+      startCountdown(s.next_fetch_at||null);
+    } catch {}
+  } catch { toast('Не вдалося завантажити налаштування',true); }
+}
+
+// Категорії
+function renderCatTable(cats) {
+  const tbody=document.getElementById('cat-tbody');
+  tbody.innerHTML='';
+  if (!cats.length) {
+    tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">Немає категорій. Додайте нижче.</td></tr>`;
+    return;
+  }
+  cats.forEach((cat,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><span class="cat-dot" style="background:${esc(cat.color)}"></span></td>
+      <td><div class="row-name">${esc(cat.name)}</div><div class="row-sub" style="font-size:11px;color:#bbb">id: ${esc(cat.id)}</div></td>
+      <td><input type="color" value="${esc(cat.color)}" style="width:36px;height:26px;padding:1px;border-radius:5px;border:1px solid #d0d0c8;cursor:pointer"></td>
+      <td><button class="del-btn">✕</button></td>`;
+    tr.querySelector('input[type=color]').addEventListener('input',function(){
+      settingsCache.categories[i].color=this.value;
+      tr.querySelector('.cat-dot').style.background=this.value;
+    });
+    tr.querySelector('.del-btn').addEventListener('click',()=>{
+      settingsCache.categories.splice(i,1);
+      renderCatTable(settingsCache.categories);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function addCategory(form) {
+  const nameEl =form.querySelector('.src-inp-name');
+  const colorEl=form.querySelector('.src-inp-color');
+  const name =nameEl.value.trim();
+  const color=colorEl?colorEl.value:'#185FA5';
+  if (!name) { toast('Введіть назву категорії',true); return; }
+  const id=slugify(name)||('cat_'+Date.now());
+  if (!settingsCache.categories) settingsCache.categories=[];
+  if (settingsCache.categories.find(c=>c.id===id)) { toast('Категорія вже існує',true); return; }
+  settingsCache.categories.push({id,name,color});
+  renderCatTable(settingsCache.categories);
+  nameEl.value='';
+  toast('Додано. Збережіть налаштування.');
+}
+
+// Ключові слова
+function renderKwTable(kws) {
+  const tbody=document.getElementById('kw-tbody');
+  tbody.innerHTML='';
+  if (!kws.length) {
+    tbody.innerHTML=`<tr><td colspan="3" style="text-align:center;color:#aaa;padding:20px">Немає ключових слів. Додайте нижче.</td></tr>`;
+    return;
+  }
+  kws.forEach((kw,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><div class="row-name">${esc(kw.phrase)}</div></td>
+      <td><span class="badge ${kw.urgent?'b-kw-urg':'b-kw'}">${kw.urgent?'⚠️ Терміново':'Звичайне'}</span></td>
+      <td><button class="del-btn">✕</button></td>`;
+    tr.querySelector('.del-btn').addEventListener('click',()=>{
+      settingsCache.keywords.splice(i,1);
+      renderKwTable(settingsCache.keywords);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function addKeyword(form) {
+  const phraseEl=form.querySelector('.src-inp-phrase');
+  const urgentEl=document.getElementById('kw-urgent');
+  const phrase=phraseEl.value.trim();
+  if (!phrase) { toast('Введіть фразу',true); return; }
+  if (!settingsCache.keywords) settingsCache.keywords=[];
+  if (settingsCache.keywords.find(k=>k.phrase.toLowerCase()===phrase.toLowerCase())) {
+    toast('Таке слово вже є',true); return;
+  }
+  settingsCache.keywords.push({id:phrase,phrase,urgent:urgentEl?urgentEl.checked:false});
+  renderKwTable(settingsCache.keywords);
+  phraseEl.value='';
+  if (urgentEl) urgentEl.checked=false;
+  toast('Додано. Збережіть налаштування.');
+}
+
+async function saveSettings() {
+  const body = {
+    ai_enabled:            document.getElementById('ai-toggle').classList.contains('on'),
+    ai_model:              document.getElementById('set-ai-model').value,
+    importance_priorities: document.getElementById('set-priorities').value,
+    rss_depth:             parseInt(document.getElementById('set-rss-depth').value)||10,
+    tg_depth:              parseInt(document.getElementById('set-tg-depth').value)||10,
+    auto_fetch_interval:   parseInt(document.getElementById('set-auto-interval').value)||0,
+    keep_days:             parseInt(document.getElementById('set-keep-days').value)||14,
+    max_items:             parseInt(document.getElementById('set-max-items').value)||500,
+    telegram_api_id:       parseInt(document.getElementById('set-tg-id').value)||0,
+    bot_chat_id:           document.getElementById('set-bot-chat-id').value.trim(),
+    digest_enabled:        document.getElementById('digest-toggle').classList.contains('on'),
+    digest_time:           document.getElementById('set-digest-time').value,
+    digest_count:          parseInt(document.getElementById('set-digest-count').value)||5,
+    listener_enabled:      document.getElementById('listener-toggle').classList.contains('on'),
+    categories:            settingsCache.categories||[],
+    keywords:              settingsCache.keywords||[],
+  };
+  const apiKey   = document.getElementById('set-api-key').value.trim();
+  const tgHash   = document.getElementById('set-tg-hash').value.trim();
+  const botToken = document.getElementById('set-bot-token').value.trim();
+  if (apiKey)   body.anthropic_api_key = apiKey;
+  if (tgHash)   body.telegram_api_hash = tgHash;
+  if (botToken) body.bot_token         = botToken;
+  try {
+    const d=await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
+    if (d.ok) {
+      toast('Збережено!');
+      document.getElementById('set-api-key').value='';
+      document.getElementById('set-tg-hash').value='';
+      document.getElementById('set-bot-token').value='';
+      loadSettings();
+    } else toast('Помилка збереження',true);
+  } catch { toast("Помилка з'єднання",true); }
+}
+
+// ── Ініціалізація ─────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const d=await api('/api/settings');
+    categories=d.categories||[];
+    Object.keys(kwUrgentMap).forEach(k=>delete kwUrgentMap[k]);
+    (d.keywords||[]).forEach(kw=>{ kwUrgentMap[kw.phrase.toLowerCase()]=kw.urgent; });
+    hasBotToken=d.has_bot_token||false;
+  } catch {}
+  try {
+    const s=await api('/api/status');
+    lastFinishedAt=s.finished_at;
+    startCountdown(s.next_fetch_at||null);
+  } catch {}
+  try {
+    const ls=await api('/api/listener/status');
+    updateListenerUI(ls);
+  } catch {}
+  await loadNews();
+  startBgPolling();
+}
+
+init();
+</script>
+</body>
+</html>
