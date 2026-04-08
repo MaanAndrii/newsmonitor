@@ -1,130 +1,120 @@
-# News Monitor — інструкція з запуску
+# News Monitor — запуск і продакшн-гайд (Raspberry Pi)
 
-## Структура проєкту
-
-```
-newsmonitor/
-├── fetcher.py        ← збирає новини і запускає AI-аналіз
-├── server.py         ← веб-сервер для дашборду
-├── index.html        ← інтерфейс дашборду
-├── requirements.txt  ← Python бібліотеки
-├── .env.example      ← шаблон змінних середовища
-└── news_data.json    ← генерується автоматично
-```
+## Що змінилось
+- Зберігання новин/seen/read перенесено на SQLite (`newsmonitor.db`) для стабільної роботи на Raspberry Pi.
+- Додано retry/backoff для зовнішніх API (Telegram Bot, RSS, Anthropic).
+- Додано `GET /api/health` для health-check.
+- Додано structured JSON logging.
+- Додано Basic Auth для веб-інтерфейсу через env (`NEWSMONITOR_AUTH_USER/PASS`).
+- Підтримано читання секретів із env (`NEWSMONITOR_ANTHROPIC_API_KEY`, `NEWSMONITOR_TELEGRAM_API_HASH`, `NEWSMONITOR_BOT_TOKEN`).
 
 ---
 
-## Крок 1 — Встановити Python та бібліотеки
+## Швидкий запуск
 
 ```bash
-# Переконайтесь що Python 3.10+ встановлений
-python --version
-
-# Встановити залежності
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+python3 server.py
 ```
 
----
-
-## Крок 2 — Отримати API ключі
-
-### Anthropic (Claude)
-1. Зайдіть на https://console.anthropic.com/
-2. Settings → API Keys → Create Key
-3. Скопіюйте ключ (починається з `sk-ant-...`)
-
-### Telegram
-1. Зайдіть на https://my.telegram.org
-2. Увійдіть своїм номером телефону
-3. "API development tools" → створіть застосунок
-4. Скопіюйте `api_id` (число) та `api_hash` (рядок)
+Веб: `http://<raspberry-ip>:8000`
 
 ---
 
-## Крок 3 — Налаштувати ключі
+## Безпека (обов'язково для продакшну)
+
+Перед запуском задайте:
 
 ```bash
-# Скопіюйте шаблон
-cp .env.example .env
-
-# Відредагуйте .env і вставте свої ключі
-nano .env   # або будь-який текстовий редактор
-
-# Завантажте змінні
-source .env
+export NEWSMONITOR_AUTH_USER=admin
+export NEWSMONITOR_AUTH_PASS='strong-password'
+export NEWSMONITOR_ANTHROPIC_API_KEY='...'
+export NEWSMONITOR_TELEGRAM_API_HASH='...'
+export NEWSMONITOR_BOT_TOKEN='...'
 ```
 
-Або вставте ключі напряму в fetcher.py (рядки 14-16).
+> Якщо секрет заданий в env, він має пріоритет над `settings.json`.
 
 ---
 
-## Крок 4 — Перший запуск Telegram (авторизація)
+## Raspberry Pi deployment (systemd)
 
-При першому запуску Telethon попросить вас увійти в Telegram:
+### 1) Юніт серверу `/etc/systemd/system/newsmonitor-server.service`
+
+```ini
+[Unit]
+Description=NewsMonitor Server
+After=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/newsmonitor
+Environment="NEWSMONITOR_AUTH_USER=admin"
+Environment="NEWSMONITOR_AUTH_PASS=change-me"
+Environment="NEWSMONITOR_LOG_LEVEL=INFO"
+ExecStart=/home/pi/newsmonitor/.venv/bin/python3 server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 2) Юніт listener `/etc/systemd/system/newsmonitor-listener.service`
+
+```ini
+[Unit]
+Description=NewsMonitor Telegram Listener
+After=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/newsmonitor
+ExecStart=/home/pi/newsmonitor/.venv/bin/python3 listener.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 3) Увімкнення
 
 ```bash
-python fetcher.py
+sudo systemctl daemon-reload
+sudo systemctl enable --now newsmonitor-server
+sudo systemctl enable --now newsmonitor-listener
 ```
 
-Введіть свій номер телефону (+380...) і код підтвердження.
-Сесія збережеться у файл `tg_session.session` — наступні запуски без авторизації.
-
----
-
-## Крок 5 — Запустити сервер і дашборд
+### 4) Перевірка
 
 ```bash
-# В одному терміналі — сервер
-python server.py
-
-# Відкрийте браузер
-# http://localhost:8000
+curl -u admin:change-me http://127.0.0.1:8000/api/health
+journalctl -u newsmonitor-server -f
 ```
-
-Натисніть **"Зібрати новини"** в дашборді — fetcher запуститься автоматично (~60 сек).
 
 ---
 
-## Автоматичне оновлення (кожні 30 хвилин)
+## Тести
 
-### Linux/Mac (cron):
 ```bash
-crontab -e
-# Додати рядок:
-*/30 * * * * cd /шлях/до/newsmonitor && source .env && python fetcher.py
+python -m unittest discover -s tests
 ```
 
-### Windows (Task Scheduler):
-Створіть завдання що запускає `python fetcher.py` кожні 30 хвилин.
+## Troubleshooting: кнопка "Зібрати новини" не дає результату
+
+- Перевірте `/api/status`: якщо `error` не порожній, fetcher падає під час запуску.
+- Сервер запускає `fetcher.py` тим самим Python-інтерпретатором, яким запущений `server.py`, тому важливо стартувати сервіс через `.venv/bin/python3`.
 
 ---
 
-## Додати нові джерела
+## Структура
 
-### RSS сайт — в fetcher.py:
-```python
-RSS_SOURCES = [
-    {"id": "up_main", "name": "Укр. правда", "url": "https://www.pravda.com.ua/rss/view_mainnews/"},
-    {"id": "nv",      "name": "НВ",          "url": "https://nv.ua/rss/all.xml"},
-    # додайте сюди...
-]
-```
-
-### Telegram канал — в fetcher.py:
-```python
-TELEGRAM_CHANNELS = [
-    {"id": "dmytro_lubinetzs", "name": "Дмитро Лубінець"},
-    # додайте сюди username каналу (без @)...
-]
-```
-
----
-
-## Орієнтовна вартість Claude API
-
-| Обсяг | Вартість/день |
-|-------|--------------|
-| 9 джерел, кожні 30 хв | ~$0.02–0.05 |
-| 30 джерел, кожні 15 хв | ~$0.10–0.20 |
-
-Модель `claude-sonnet-4` — оптимальний баланс ціна/якість.
+- `server.py` — веб сервер + API + scheduler.
+- `fetcher.py` — пакетний збір новин.
+- `listener.py` — realtime Telegram listener.
+- `storage.py` — SQLite storage layer.
+- `utils.py` — retry/backoff + structured logging.
+- `index.html` — UI.
