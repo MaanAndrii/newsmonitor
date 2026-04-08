@@ -10,6 +10,7 @@ import hashlib
 import base64
 import asyncio
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -19,7 +20,7 @@ from urllib.parse import urlparse
 from config import (
     SOURCES_FILE, SETTINGS_FILE, DATA_FILE, READ_FILE,
     LISTENER_FILE, SESSION_FILE,
-    DEFAULT_SOURCES, DEFAULT_SETTINGS
+    DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
 from storage import Storage
 from utils import RetryConfig, retry_call, setup_logging, env_secret
@@ -67,7 +68,18 @@ def _run_fetcher_process():
 
     def _do():
         try:
-            subprocess.run(["python3", "fetcher.py"], check=False)
+            result = subprocess.run(
+                [sys.executable, "fetcher.py"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                _fetcher_status["error"] = (
+                    result.stderr.strip() or result.stdout.strip() or
+                    f"Fetcher exited with code {result.returncode}"
+                )
+                LOGGER.error(_fetcher_status["error"])
         except Exception as e:
             _fetcher_status["error"] = str(e)
         finally:
@@ -380,6 +392,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/news":            self._serve_news,
             "/api/sources":         lambda: self.send_json(load_json(SOURCES_FILE, DEFAULT_SOURCES)),
             "/api/settings":        self._serve_settings,
+            "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
             "/api/status":          lambda: self.send_json(dict(_fetcher_status)),
             "/api/health":          self._serve_health,
             "/api/listener/status": lambda: self.send_json(get_listener_status()),

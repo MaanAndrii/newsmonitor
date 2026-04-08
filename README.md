@@ -103,6 +103,34 @@ journalctl -u newsmonitor-server -f
 python -m unittest discover -s tests
 ```
 
+## Як синхронізувати виправлення: Git → Raspberry Pi
+
+### 1) На вашому ПК (де розробка)
+```bash
+git add .
+git commit -m "your fix"
+git push origin <branch>
+```
+
+### 2) На Raspberry Pi
+```bash
+cd /home/<user>/newsmonitor
+git pull origin <branch>
+/home/<user>/newsmonitor/.venv/bin/pip install -r requirements.txt
+sudo systemctl restart newsmonitor-server newsmonitor-listener
+```
+
+### 3) Перевірка
+```bash
+curl -u <user>:<pass> http://127.0.0.1:8000/api/version
+curl -u <user>:<pass> http://127.0.0.1:8000/api/health
+```
+
+## Troubleshooting: кнопка "Зібрати новини" не дає результату
+
+- Перевірте `/api/status`: якщо `error` не порожній, fetcher падає під час запуску.
+- Сервер запускає `fetcher.py` тим самим Python-інтерпретатором, яким запущений `server.py`, тому важливо стартувати сервіс через `.venv/bin/python3`.
+
 ---
 
 ## Структура
