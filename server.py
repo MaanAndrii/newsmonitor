@@ -7,8 +7,10 @@ import http.server
 import json
 import os
 import hashlib
+import base64
 import asyncio
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -18,10 +20,16 @@ from urllib.parse import urlparse
 from config import (
     SOURCES_FILE, SETTINGS_FILE, DATA_FILE, READ_FILE,
     LISTENER_FILE, SESSION_FILE,
-    DEFAULT_SOURCES, DEFAULT_SETTINGS
+    DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
+from storage import Storage
+from utils import RetryConfig, retry_call, setup_logging, env_secret
 
 PORT = 8000
+LOGGER = setup_logging(os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO"))
+STORAGE = Storage()
+AUTH_USER = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
+AUTH_PASS = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
 
 # ── Стан fetcher-а ────────────────────────────────────────────────────────────
 _fetcher_lock   = threading.Lock()
@@ -60,7 +68,18 @@ def _run_fetcher_process():
 
     def _do():
         try:
-            subprocess.run(["python3", "fetcher.py"], check=False)
+            result = subprocess.run(
+                [sys.executable, "fetcher.py"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                _fetcher_status["error"] = (
+                    result.stderr.strip() or result.stdout.strip() or
+                    f"Fetcher exited with code {result.returncode}"
+                )
+                LOGGER.error(_fetcher_status["error"])
         except Exception as e:
             _fetcher_status["error"] = str(e)
         finally:
@@ -130,11 +149,8 @@ def _digest_tick(digest_time: str):
 
 
 def _send_digest(bot_token: str, chat_id: str, count: int):
-    if not os.path.exists(DATA_FILE):
-        return
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = {"items": STORAGE.load_items()}
         top = sorted(data.get("items", []),
                      key=lambda x: x.get("importance", 0), reverse=True)[:count]
         if not top:
@@ -153,18 +169,26 @@ def _send_digest(bot_token: str, chat_id: str, count: int):
 
 def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
     try:
-        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id":                  chat_id,
-            "text":                     text,
-            "parse_mode":               "HTML",
-            "disable_web_page_preview": "true",
-        }).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()).get("ok", False)
+        def _send():
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id":                  chat_id,
+                "text":                     text,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": "true",
+            }).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read()).get("ok", False)
+
+        return retry_call(
+            _send,
+            RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.3),
+            LOGGER,
+            "telegram_bot_send",
+        )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.error(f"  [BOT] {e}")
         return False
 
 
@@ -192,16 +216,29 @@ def write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 def load_read_ids() -> set:
+    ids = STORAGE.load_read_ids()
+    if ids:
+        return ids
     if not os.path.exists(READ_FILE):
         return set()
     try:
         with open(READ_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            ids = set(json.load(f))
+        STORAGE.save_read_ids(ids)
+        return ids
     except Exception:
         return set()
 
 def save_read_ids(ids: set) -> None:
+    STORAGE.save_read_ids(ids)
     write_json(READ_FILE, sorted(ids))
+
+def resolve_settings_with_env(settings: dict) -> dict:
+    merged = dict(settings)
+    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", merged.get("anthropic_api_key", ""))
+    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", merged.get("telegram_api_hash", ""))
+    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", merged.get("bot_token", ""))
+    return merged
 
 def get_listener_status() -> dict:
     if not os.path.exists(LISTENER_FILE):
@@ -308,6 +345,27 @@ def _tg_auth_logout() -> dict:
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def _auth_required(self) -> bool:
+        return bool(AUTH_USER and AUTH_PASS)
+
+    def _authorized(self) -> bool:
+        if not self._auth_required():
+            return True
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
+        try:
+            raw = base64.b64decode(header.split(" ", 1)[1]).decode("utf-8")
+            user, pwd = raw.split(":", 1)
+        except Exception:
+            return False
+        return user == AUTH_USER and pwd == AUTH_PASS
+
+    def _deny_auth(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="newsmonitor"')
+        self.end_headers()
+
 
     def _read_body(self) -> dict:
         try:
@@ -326,12 +384,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p = urlparse(self.path).path
         routes = {
             "/api/news":            self._serve_news,
             "/api/sources":         lambda: self.send_json(load_json(SOURCES_FILE, DEFAULT_SOURCES)),
             "/api/settings":        self._serve_settings,
+            "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
             "/api/status":          lambda: self.send_json(dict(_fetcher_status)),
+            "/api/health":          self._serve_health,
             "/api/listener/status": lambda: self.send_json(get_listener_status()),
             "/api/refresh":         self._start_fetcher,
             "/api/tg/session":      self._tg_session_status,
@@ -344,6 +407,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         body = self._read_body()
         routes = {
@@ -364,6 +430,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
 
     def do_DELETE(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         body = self._read_body()
         if p == "/api/sources":
@@ -374,11 +443,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # ── GET ───────────────────────────────────────────────────────────────────
 
     def _serve_news(self):
-        if not os.path.exists(DATA_FILE):
-            self.send_json({"error": "no data"}, 404); return
         try:
-            with open(DATA_FILE, "rb") as f:
-                body = f.read()
+            payload = STORAGE.export_news_payload(
+                ai_enabled=bool(resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS)).get("ai_enabled", False)),
+                new_count=0,
+            )
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", len(body))
@@ -390,19 +460,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _serve_settings(self):
         s    = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s    = resolve_settings_with_env(s)
         safe = {k: v for k, v in s.items()
                 if k not in ("anthropic_api_key", "telegram_api_hash", "bot_token")}
         safe["has_anthropic_key"] = bool(s.get("anthropic_api_key"))
         safe["has_telegram_hash"] = bool(s.get("telegram_api_hash"))
         safe["has_bot_token"]     = bool(s.get("bot_token"))
+        safe["auth_enabled"]      = self._auth_required()
         self.send_json(safe)
+
+    def _serve_health(self):
+        self.send_json({
+            "ok": True,
+            "ts": time.time(),
+            "fetcher_running": _fetcher_status["running"],
+            "listener": get_listener_status().get("status", "unknown"),
+            "db_path": STORAGE.path,
+        })
 
     def _tg_session_status(self):
         has_session = os.path.exists(SESSION_FILE + ".session")
         if not has_session:
             self.send_json({"authorized": False}); return
         # перевіряємо чи сесія дійсна
-        s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         api_id   = int(s.get("telegram_api_id",   0) or 0)
         api_hash = s.get("telegram_api_hash", "")
         if not api_id or not api_hash:
@@ -573,15 +654,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         item_id = str(body.get("id", "")).strip()
         if not item_id:
             self.send_json({"error": "Немає id"}, 400); return
-        s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         bot_token   = s.get("bot_token", "")
         bot_chat_id = s.get("bot_chat_id", "")
         if not bot_token or not bot_chat_id:
             self.send_json({"error": "Налаштуйте Bot Token і Chat ID"}, 400); return
-        if not os.path.exists(DATA_FILE):
-            self.send_json({"error": "Немає даних"}, 404); return
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = {"items": STORAGE.load_items()}
         item = next((it for it in data.get("items", []) if it["id"] == item_id), None)
         if not item:
             self.send_json({"error": "Новину не знайдено"}, 404); return

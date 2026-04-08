@@ -24,6 +24,11 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from storage import Storage
+from utils import RetryConfig, retry_call, setup_logging, env_secret
+
+LOGGER = setup_logging(os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO"))
+STORAGE = Storage()
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
@@ -50,19 +55,22 @@ def _write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 def load_seen_ids() -> set:
+    ids = STORAGE.load_seen_ids()
+    if ids:
+        return ids
     if not os.path.exists(SEEN_FILE):
         return set()
     try:
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            ids = set(json.load(f))
+        STORAGE.save_seen_ids(ids)
+        return ids
     except Exception:
         return set()
 
 def save_seen_ids(ids: set) -> None:
-    lst = list(ids)
-    if len(lst) > 10000:
-        lst = lst[-10000:]
-    _write_json(SEEN_FILE, lst)
+    STORAGE.save_seen_ids(ids)
+    _write_json(SEEN_FILE, list(ids)[-10000:])
 
 def write_status(status: str, error: str = "") -> None:
     """Записує статус слухача — server.py читає кожні 5 сек."""
@@ -92,18 +100,26 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
     if not bot_token or not chat_id or not text:
         return False
     try:
-        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id":                  chat_id,
-            "text":                     text,
-            "parse_mode":               "HTML",
-            "disable_web_page_preview": "true",
-        }).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()).get("ok", False)
+        def _send():
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id":                  chat_id,
+                "text":                     text,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": "true",
+            }).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read()).get("ok", False)
+
+        return retry_call(
+            _send,
+            RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.3),
+            LOGGER,
+            "telegram_bot_send",
+        )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.error(f"  [BOT] {e}")
         return False
 
 
@@ -138,10 +154,15 @@ def analyze_single(item: dict, api_key: str, categories: list,
         "ТІЛЬКИ JSON об'єкт, без пояснень та markdown."
     )
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+    response = retry_call(
+        lambda: client.messages.create(
+            model=model,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        ),
+        RetryConfig(attempts=3, base_delay=1.5, max_delay=8.0, jitter=0.3),
+        LOGGER,
+        "anthropic_single_analyze",
     )
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
@@ -157,50 +178,19 @@ def analyze_single(item: dict, api_key: str, categories: list,
 _data_lock = threading.Lock()
 
 def append_item(item: dict, keep_days: int, max_items: int) -> None:
-    """Атомарно додає одну новину до news_data.json."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-
+    """Атомарно додає одну новину у SQLite + синхронізує legacy JSON."""
     with _data_lock:
-        existing = []
-        meta     = {}
-        if os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                existing = data.get("items", [])
-                meta     = {k: v for k, v in data.items() if k != "items"}
-            except Exception:
-                pass
-
-        # перевіряємо дубль
-        if any(it["id"] == item["id"] for it in existing):
+        existing_ids = {x["id"] for x in STORAGE.load_items()}
+        if item["id"] in existing_ids:
             return
-
-        existing.insert(0, item)
-
-        # очищення
-        result = []
-        for it in existing:
-            try:
-                t = it.get("time", "")
-                if t.endswith("Z"):
-                    t = t[:-1] + "+00:00"
-                elif "+" not in t and len(t) > 10 and t.count("-") <= 2:
-                    t += "+00:00"
-                if datetime.fromisoformat(t) >= cutoff:
-                    result.append(it)
-            except Exception:
-                result.append(it)
-
-        result = result[:max_items]
-
-        meta.update({
+        STORAGE.append_item(item)
+        result = STORAGE.cleanup(keep_days, max_items)
+        _write_json(DATA_FILE, {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "total":      len(result),
-            "new_count":  meta.get("new_count", 0) + 1,
+            "new_count":  1,
             "items":      result,
         })
-        _write_json(DATA_FILE, meta)
 
 
 # ── Головний слухач ───────────────────────────────────────────────────────────
@@ -230,6 +220,9 @@ async def run_listener():
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
+    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", api_hash)
+    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
+    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
 
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
