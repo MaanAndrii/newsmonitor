@@ -21,9 +21,10 @@ from config import (
     IMPORTANCE_CRITERIA
 )
 from storage import Storage
-from utils import RetryConfig, retry_call, env_secret
+from utils import RetryConfig, retry_call, env_secret, setup_logging
 
 STORAGE = Storage()
+LOGGER = setup_logging("newsmonitor.fetcher")
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ def load_json(path: str, default) -> dict:
                         data[k] = v
             return data
         except (json.JSONDecodeError, OSError) as e:
-            print(f"  [WARN] Не вдалося прочитати {path}: {e}")
+            LOGGER.warning("[WARN] Не вдалося прочитати %s: %s", path, e)
     write_json(path, default)
     return dict(default) if isinstance(default, dict) else default
 
@@ -104,7 +105,7 @@ def cleanup_old_items(items: list, keep_days: int, max_items: int) -> list:
     result = result[:max_items]
     removed = before - len(result)
     if removed > 0:
-        print(f"  [CLEAN] Видалено {removed} старих | залишилось: {len(result)}")
+        LOGGER.info("[CLEAN] Видалено %s старих | залишилось: %s", removed, len(result))
     return result
 
 
@@ -146,7 +147,7 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
             "telegram_bot_send",
         )
     except Exception as e:
-        LOGGER.error(f"  [BOT] Помилка відправки: {e}")
+        LOGGER.exception("[BOT] Помилка відправки")
         return False
 
 def notify_keywords(new_items: list, keywords: list,

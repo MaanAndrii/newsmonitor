@@ -1,9 +1,14 @@
 import unittest
 
-from utils import RetryConfig, retry_call
+from utils import RetryConfig, retry_call, setup_logging
 
 
 class RetryTest(unittest.TestCase):
+    def test_setup_logging(self):
+        logger = setup_logging("newsmonitor.test", level="INFO")
+        self.assertEqual(logger.name, "newsmonitor.test")
+        self.assertGreaterEqual(len(logger.handlers), 1)
+
     def test_retry_call(self):
         calls = {"n": 0}
 

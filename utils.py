@@ -1,7 +1,9 @@
-"""Utility helpers: retry/backoff and env config."""
+"""Utility helpers: structured logging, retry/backoff and env config."""
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import random
 import time
@@ -9,6 +11,37 @@ from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
+
+
+class JsonFormatter(logging.Formatter):
+    """Small JSON formatter for predictable machine-readable logs."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
+            "level": record.levelname,
+            "name": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def setup_logging(name: str = "newsmonitor", level: str | None = None) -> logging.Logger:
+    """Create/reuse logger with JSON formatter."""
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+
+    level_name = (level or os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO")).upper()
+    logger.setLevel(getattr(logging, level_name, logging.INFO))
+    logger.propagate = False
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    logger.addHandler(handler)
+    return logger
 
 
 @dataclass
@@ -20,7 +53,12 @@ class RetryConfig:
     retry_exceptions: tuple[type[BaseException], ...] = (Exception,)
 
 
-def retry_call(fn: Callable[[], T], cfg: RetryConfig, op_name: str = "operation") -> T:
+def retry_call(
+    fn: Callable[[], T],
+    cfg: RetryConfig,
+    op_name: str = "operation",
+    logger: logging.Logger | None = None,
+) -> T:
     err: BaseException | None = None
     for i in range(1, cfg.attempts + 1):
         try:
@@ -31,7 +69,11 @@ def retry_call(fn: Callable[[], T], cfg: RetryConfig, op_name: str = "operation"
                 break
             delay = min(cfg.base_delay * (2 ** (i - 1)), cfg.max_delay)
             delay += random.uniform(0, cfg.jitter)
-            print(f"[retry] {op_name}: attempt {i}/{cfg.attempts} failed ({exc}); sleep {delay:.2f}s")
+            msg = f"[retry] {op_name}: attempt {i}/{cfg.attempts} failed ({exc}); sleep {delay:.2f}s"
+            if logger:
+                logger.warning(msg)
+            else:
+                print(msg)
             time.sleep(delay)
     assert err is not None
     raise err

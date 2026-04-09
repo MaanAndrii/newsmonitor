@@ -26,10 +26,11 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
 from storage import Storage
-from utils import RetryConfig, retry_call, env_secret
+from utils import RetryConfig, retry_call, env_secret, setup_logging
 
 PORT = 8000
 STORAGE = Storage()
+LOGGER = setup_logging("newsmonitor.server")
 
 # ── Стан fetcher-а ────────────────────────────────────────────────────────────
 _fetcher_lock   = threading.Lock()
@@ -81,9 +82,10 @@ def _run_fetcher_process():
                     result.stderr.strip() or result.stdout.strip() or
                     f"Fetcher exited with code {result.returncode}"
                 )
-                print(_fetcher_status["error"])
+                LOGGER.error(_fetcher_status["error"])
         except Exception as e:
             _fetcher_status["error"] = str(e)
+            LOGGER.exception("Fetcher process failed")
         finally:
             with _fetcher_lock:
                 _fetcher_status["running"]     = False
@@ -105,13 +107,13 @@ def _schedule_auto_fetch(interval_minutes: int):
         )
         _auto_timer.daemon = True
         _auto_timer.start()
-        print(f"  [AUTO] Збір RSS через {interval_minutes} хв")
+        LOGGER.info("[AUTO] Збір RSS через %s хв", interval_minutes)
     else:
         _fetcher_status["next_fetch_at"] = None
 
 
 def _auto_fetch_tick(interval_minutes: int):
-    print(f"  [AUTO] Збір о {time.strftime('%H:%M:%S')}")
+    LOGGER.info("[AUTO] Збір о %s", time.strftime('%H:%M:%S'))
     _run_fetcher_process()
     _schedule_auto_fetch(interval_minutes)
 
@@ -137,9 +139,9 @@ def _schedule_digest(digest_time: str, enabled: bool):
         )
         _digest_timer.daemon = True
         _digest_timer.start()
-        print(f"  [DIGEST] Заплановано на {digest_time}")
+        LOGGER.info("[DIGEST] Заплановано на %s", digest_time)
     except Exception as e:
-        print(f"  [DIGEST] Помилка: {e}")
+        LOGGER.exception("[DIGEST] Помилка планування")
 
 
 def _digest_tick(digest_time: str):
@@ -164,9 +166,9 @@ def _send_digest(bot_token: str, chat_id: str, count: int):
                 line += f"\n   <a href=\"{item['url']}\">Читати</a>"
             lines.append(line)
         _send_bot_message(bot_token, chat_id, "\n\n".join(lines))
-        print(f"  [DIGEST] Надіслано {len(top)} новин")
+        LOGGER.info("[DIGEST] Надіслано %s новин", len(top))
     except Exception as e:
-        print(f"  [DIGEST] {e}")
+        LOGGER.exception("[DIGEST] Помилка відправки")
 
 
 def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
@@ -189,7 +191,7 @@ def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
             "telegram_bot_send",
         )
     except Exception as e:
-        LOGGER.error(f"  [BOT] {e}")
+        LOGGER.exception("[BOT] Помилка відправки")
         return False
 
 
@@ -747,7 +749,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         new_src = {"id": src_id, "name": name, "url": url, "enabled": True, "ai_enabled": True}
         sources.setdefault(src_type, []).append(new_src)
         write_json(SOURCES_FILE, sources)
-        print(f"  [API] Додано {src_type}: {src_id}")
+        LOGGER.info("[API] Додано %s: %s", src_type, src_id)
         self.send_json({"ok": True, "source": new_src})
 
     def _toggle_source(self, body: dict):
@@ -941,13 +943,13 @@ if __name__ == "__main__":
 
     interval = settings.get("auto_fetch_interval", 0)
     if interval > 0:
-        print(f"Автозбір: кожні {interval} хв")
+        LOGGER.info("Автозбір: кожні %s хв", interval)
         _schedule_auto_fetch(interval)
 
     if settings.get("digest_enabled"):
         _schedule_digest(settings.get("digest_time", "09:00"), True)
 
-    print(f"Сервер: http://localhost:{PORT}")
-    print("Ctrl+C — зупинити\n")
+    LOGGER.info("Сервер: http://localhost:%s", PORT)
+    LOGGER.info("Ctrl+C — зупинити")
     with NewsMonitorHTTPServer(("", PORT), Handler) as httpd:
         httpd.serve_forever()
