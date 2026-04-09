@@ -25,6 +25,20 @@ python3 server.py
 
 ## Безпека (обов'язково для продакшну)
 
+### Що таке «секрети» і для чого вони?
+**Секрети** — це чутливі дані, які дають доступ до зовнішніх сервісів або адмін-функцій.
+
+У цьому проєкті це, зокрема:
+- `NEWSMONITOR_AUTH_USER` / `NEWSMONITOR_AUTH_PASS` — вхід в адмінку.
+- `NEWSMONITOR_ANTHROPIC_API_KEY` — доступ до AI-аналізу (Claude API).
+- `NEWSMONITOR_TELEGRAM_API_HASH` (+ `telegram_api_id`) — доступ до Telegram client API.
+- `NEWSMONITOR_BOT_TOKEN` — доступ до Telegram Bot API.
+
+Чому це важливо:
+- якщо секрет витече, стороння людина може керувати вашими інтеграціями або витрачати ваші API-квоти;
+- секрети не можна публікувати в Git, скріншотах, логах або чатах;
+- у продакшні їх краще зберігати в env/systemd variables або в secret manager.
+
 Перед запуском задайте:
 
 ```bash
@@ -35,7 +49,14 @@ export NEWSMONITOR_TELEGRAM_API_HASH='...'
 export NEWSMONITOR_BOT_TOKEN='...'
 ```
 
-> Якщо секрет заданий в env, він має пріоритет над `settings.json`.
+> Секрети можуть бути збережені в `settings.json`, але значення з env мають пріоритет
+> (`NEWSMONITOR_ANTHROPIC_API_KEY`, `NEWSMONITOR_TELEGRAM_API_HASH`, `NEWSMONITOR_BOT_TOKEN`).
+> Для веб-адмінки увімкніть авторизацію:
+>
+> ```bash
+> export NEWSMONITOR_AUTH_USER=admin
+> export NEWSMONITOR_AUTH_PASS='strong-password'
+> ```
 
 ---
 
@@ -103,6 +124,20 @@ journalctl -u newsmonitor-server -f
 python -m unittest discover -s tests
 ```
 
+CI запускає:
+- `ruff check io_utils.py tests`
+- `python -m unittest discover -s tests`
+- `python -m py_compile server.py fetcher.py listener.py io_utils.py storage.py utils.py`
+
+## Legacy JSON snapshot (опційно)
+
+За замовчуванням API працює зі SQLite як єдиним джерелом істини.
+Якщо потрібен legacy `news_data.json` для зовнішніх інтеграцій — увімкніть:
+
+```bash
+export NEWSMONITOR_WRITE_LEGACY_JSON=true
+```
+
 ## Як синхронізувати виправлення: Git → Raspberry Pi
 
 ### 1) На вашому ПК (де розробка)
@@ -115,6 +150,8 @@ git push origin <branch>
 ### 2) На Raspberry Pi
 ```bash
 cd /home/<user>/newsmonitor
+git fetch --all --prune
+git checkout <branch>
 git pull origin <branch>
 /home/<user>/newsmonitor/.venv/bin/pip install -r requirements.txt
 sudo systemctl restart newsmonitor-server newsmonitor-listener
@@ -126,10 +163,26 @@ curl -u <user>:<pass> http://127.0.0.1:8000/api/version
 curl -u <user>:<pass> http://127.0.0.1:8000/api/health
 ```
 
+### 4) Рекомендований швидкий сценарій оновлення (копіпаст)
+```bash
+cd /home/<user>/newsmonitor \
+&& git fetch --all --prune \
+&& git checkout <branch> \
+&& git pull --ff-only origin <branch> \
+&& /home/<user>/newsmonitor/.venv/bin/pip install -r requirements.txt \
+&& sudo systemctl restart newsmonitor-server newsmonitor-listener \
+&& curl -u <user>:<pass> http://127.0.0.1:8000/api/health
+```
+
+> Якщо `git pull --ff-only` не проходить (локальні зміни на Pi), спочатку збережіть їх:
+> `git stash -u`, потім зробіть `pull`, а далі `git stash pop` за потреби.
+
 ## Troubleshooting: кнопка "Зібрати новини" не дає результату
 
 - Перевірте `/api/status`: якщо `error` не порожній, fetcher падає під час запуску.
 - Сервер запускає `fetcher.py` тим самим Python-інтерпретатором, яким запущений `server.py`, тому важливо стартувати сервіс через `.venv/bin/python3`.
+
+Детальні інструкції з інцидентів — у `RUNBOOK.md`.
 
 ---
 
