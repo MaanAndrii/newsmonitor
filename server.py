@@ -781,6 +781,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"authorized": False, "error": "Не вказано API ID/Hash"}); return
         try:
             from telethon.sync import TelegramClient as SyncClient
+            _ensure_thread_event_loop()
             client = SyncClient(SESSION_FILE, api_id, api_hash)
             client.connect()
             authorized = client.is_user_authorized()

@@ -616,6 +616,7 @@ let isAdmin        = true;
 let viewMode       = 'single';
 const SETTINGS_MODE = window.location.pathname.startsWith('/settings');
 let listenerDiagBySource = {};
+let sourceActivityById = {};
 const kwUrgentMap  = {};
 let settingsCache  = {};
 const KEY_MASK = '**********';
@@ -1071,6 +1072,20 @@ async function loadSources() {
   if (!isAdmin) { toast('Потрібні права адміністратора', true); return; }
   try {
     const data = await api('/api/sources');
+    let news = {items:[]};
+    try { news = await api('/api/news'); } catch {}
+    sourceActivityById = {};
+    (news.items || []).forEach(it => {
+      const sid = String(it.source_id || '');
+      const t = String(it.time || '');
+      if (!sid || !t) return;
+      const nextMs = Date.parse(t);
+      if (Number.isNaN(nextMs)) return;
+      const prev = sourceActivityById[sid];
+      if (!prev || nextMs > prev.ms) {
+        sourceActivityById[sid] = {time: t, ms: nextMs};
+      }
+    });
     let diag = {sources:[]};
     try { diag = await api('/api/listener/diagnostics'); } catch {}
     listenerDiagBySource = {};
@@ -1093,13 +1108,29 @@ function renderSrcTable(type, list) {
   sorted.forEach(s => {
     const diag = listenerDiagBySource[s.id] || {};
     const last = diag.last_message || null;
+    const activity = sourceActivityById[s.id] || null;
     let lastHtml = '<span style="color:#bbb">—</span>';
+    if (type === 'rss') {
+      if (activity && activity.time) {
+        const dt = new Date(activity.time);
+        const ageH = isNaN(dt.getTime()) ? 9999 : (Date.now() - dt.getTime()) / 36e5;
+        const cls = ageH <= 12 ? 'green' : (ageH <= 48 ? 'yellow' : 'red');
+        lastHtml = `<div class="src-activity"><span class="src-dot ${cls}"></span><span>${esc(fmtTime(activity.time))}</span></div>`;
+      } else {
+        lastHtml = '<div class="src-activity"><span class="src-dot red"></span><span style="font-size:12px;color:#999">Ще не було</span></div>';
+      }
+    }
     if (type === 'telegram') {
       if (last && last.time) {
         const dt = new Date(last.time);
         const ageH = isNaN(dt.getTime()) ? 9999 : (Date.now() - dt.getTime()) / 36e5;
         const cls = ageH <= 12 ? 'green' : (ageH <= 48 ? 'yellow' : 'red');
         lastHtml = `<div class="src-activity"><span class="src-dot ${cls}"></span><span>${esc(fmtTime(last.time))}</span></div>`;
+      } else if (activity && activity.time) {
+        const dt = new Date(activity.time);
+        const ageH = isNaN(dt.getTime()) ? 9999 : (Date.now() - dt.getTime()) / 36e5;
+        const cls = ageH <= 12 ? 'green' : (ageH <= 48 ? 'yellow' : 'red');
+        lastHtml = `<div class="src-activity"><span class="src-dot ${cls}"></span><span>${esc(fmtTime(activity.time))}</span></div>`;
       } else if (diag.bound === false) {
         const err = (diag.binding && diag.binding.error) ? ` (${esc(diag.binding.error)})` : '';
         lastHtml = `<div class="src-activity"><span class="src-dot red"></span><span style="color:#c62828">Не підв'язано${err}</span></div>`;
