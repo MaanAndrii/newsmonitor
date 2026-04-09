@@ -30,6 +30,7 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from io_utils import load_json, write_json
 from storage import Storage
 from utils import RetryConfig, retry_call, env_secret, setup_logging
 
@@ -38,27 +39,6 @@ LOGGER = setup_logging("newsmonitor.listener")
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
-
-def load_json(path: str, default) -> dict:
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(default, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            return data
-        except (json.JSONDecodeError, OSError) as e:
-            LOGGER.warning("[WARN] %s: %s", path, e)
-    _write_json(path, default)
-    return dict(default) if isinstance(default, dict) else default
-
-def _write_json(path: str, data) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 def load_seen_ids() -> set:
     ids = STORAGE.load_seen_ids()
@@ -76,7 +56,7 @@ def load_seen_ids() -> set:
 
 def save_seen_ids(ids: set) -> None:
     STORAGE.save_seen_ids(ids)
-    _write_json(SEEN_FILE, list(ids)[-10000:])
+    write_json(SEEN_FILE, list(ids)[-10000:])
 
 def write_status(status: str, error: str = "", extra: dict | None = None) -> None:
     """Записує статус слухача — server.py читає кожні 5 сек."""
@@ -88,7 +68,7 @@ def write_status(status: str, error: str = "", extra: dict | None = None) -> Non
     }
     if extra:
         payload.update(extra)
-    _write_json(LISTENER_FILE, payload)
+    write_json(LISTENER_FILE, payload)
 
 def _normalize_channel_username(url_or_name: str) -> str:
     raw = (url_or_name or "").strip()
@@ -191,6 +171,15 @@ def analyze_single(item: dict, api_key: str, categories: list,
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError("AI response must be an object")
+    importance = result.get("importance", 5)
+    try:
+        importance = int(importance)
+    except (TypeError, ValueError):
+        importance = 5
+    result["importance"] = min(10, max(1, importance))
+    result["is_duplicate"] = bool(result.get("is_duplicate", False))
 
     if result.get("category") not in cat_ids:
         result["category"] = cat_ids[0]
@@ -211,12 +200,13 @@ def append_item(item: dict, keep_days: int, max_items: int) -> None:
         result = STORAGE.cleanup(keep_days, max_items)
         prev_new = int(STORAGE.get_kv("new_count", 0) or 0)
         STORAGE.set_kv("new_count", prev_new + 1)
-        _write_json(DATA_FILE, {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "total":      len(result),
-            "new_count":  prev_new + 1,
-            "items":      result,
-        })
+        if os.getenv("NEWSMONITOR_WRITE_LEGACY_JSON", "").strip().lower() in {"1", "true", "yes", "on"}:
+            write_json(DATA_FILE, {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "total":      len(result),
+                "new_count":  prev_new + 1,
+                "items":      result,
+            })
 
 
 # ── Головний слухач ───────────────────────────────────────────────────────────
@@ -244,20 +234,20 @@ async def run_listener():
     sources     = load_json(SOURCES_FILE,  DEFAULT_SOURCES)
 
     api_id      = int(settings.get("telegram_api_id",   0) or 0)
-    api_hash    = settings.get("telegram_api_hash", "")
+    api_hash    = ""
     ai_enabled  = bool(settings.get("ai_enabled", False))
     ai_model    = settings.get("ai_model", DEFAULT_AI_MODEL)
-    api_key     = settings.get("anthropic_api_key", "")
+    api_key     = ""
     categories  = settings.get("categories", [])
     keywords    = settings.get("keywords", [])
-    bot_token   = settings.get("bot_token", "")
+    bot_token   = ""
     bot_chat_id = settings.get("bot_chat_id", "")
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
-    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", api_hash)
-    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
-    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
+    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", "")
+    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", "")
 
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."

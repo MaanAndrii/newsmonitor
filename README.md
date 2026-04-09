@@ -35,7 +35,13 @@ export NEWSMONITOR_TELEGRAM_API_HASH='...'
 export NEWSMONITOR_BOT_TOKEN='...'
 ```
 
-> Якщо секрет заданий в env, він має пріоритет над `settings.json`.
+> Починаючи з поточної версії секрети читаються **лише з env** і не зберігаються у `settings.json`.
+> Для веб-адмінки увімкніть авторизацію:
+>
+> ```bash
+> export NEWSMONITOR_AUTH_USER=admin
+> export NEWSMONITOR_AUTH_PASS='strong-password'
+> ```
 
 ---
 
@@ -101,6 +107,15 @@ journalctl -u newsmonitor-server -f
 
 ```bash
 python -m unittest discover -s tests
+```
+
+## Legacy JSON snapshot (опційно)
+
+За замовчуванням API працює зі SQLite як єдиним джерелом істини.
+Якщо потрібен legacy `news_data.json` для зовнішніх інтеграцій — увімкніть:
+
+```bash
+export NEWSMONITOR_WRITE_LEGACY_JSON=true
 ```
 
 ## Як синхронізувати виправлення: Git → Raspberry Pi

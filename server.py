@@ -7,7 +7,6 @@ import http.server
 import json
 import os
 import hashlib
-import base64
 import asyncio
 import subprocess
 import sys
@@ -25,6 +24,7 @@ from config import (
     LISTENER_FILE, SESSION_FILE,
     DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
+from io_utils import load_json, write_json
 from storage import Storage
 from utils import RetryConfig, retry_call, env_secret, setup_logging
 
@@ -145,7 +145,7 @@ def _schedule_digest(digest_time: str, enabled: bool):
 
 
 def _digest_tick(digest_time: str):
-    s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+    s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
     if s.get("bot_token") and s.get("bot_chat_id"):
         _send_digest(s["bot_token"], s["bot_chat_id"],
                      max(1, int(s.get("digest_count", 5))))
@@ -197,27 +197,6 @@ def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
 
-def load_json(path: str, default) -> dict:
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(default, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            return data
-        except (json.JSONDecodeError, OSError):
-            pass
-    write_json(path, default)
-    return dict(default)
-
-def write_json(path: str, data) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
 def load_read_ids() -> set:
     ids = STORAGE.load_read_ids()
     if ids:
@@ -238,9 +217,9 @@ def save_read_ids(ids: set) -> None:
 
 def resolve_settings_with_env(settings: dict) -> dict:
     merged = dict(settings)
-    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", merged.get("anthropic_api_key", ""))
-    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", merged.get("telegram_api_hash", ""))
-    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", merged.get("bot_token", ""))
+    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", "")
+    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", "")
     return merged
 
 def get_listener_status() -> dict:
@@ -450,7 +429,9 @@ class NewsMonitorHTTPServer(http.server.ThreadingHTTPServer):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _auth_required(self) -> bool:
-        return False
+        user = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
+        pwd = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
+        return bool(user and pwd)
 
     def _authorized(self) -> bool:
         if not self._auth_required():
@@ -514,10 +495,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if not self._authorized():
-            self._deny_auth()
-            return
         p = urlparse(self.path).path
+        if not self._authorized():
+            if p == "/api/me":
+                self.send_json({"admin": False})
+                return
+            if p.startswith("/api/"):
+                self._deny_auth()
+                return
+            # дозволяємо віддати сторінку логіну/статику
+            super().do_GET()
+            return
         admin_only = {
             "/api/settings",
             "/api/sources",
@@ -552,11 +540,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        p    = urlparse(self.path).path
+        body = self._read_body()
+        if p == "/api/login":
+            self._login(body)
+            return
         if not self._authorized():
             self._deny_auth()
             return
-        p    = urlparse(self.path).path
-        body = self._read_body()
         admin_only = {
             "/api/sources",
             "/api/sources/toggle",
@@ -586,7 +577,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code":     lambda: self._tg_send_code(body),
             "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
             "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
-            "/api/login":            lambda: self._login(body),
             "/api/logout":           self._logout,
         }
         if p in routes:
@@ -645,7 +635,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         })
 
     def _login(self, body: dict):
-        self.send_json({"ok": True, "admin": True})
+        if not self._auth_required():
+            self.send_json({"ok": True, "admin": True})
+            return
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", "")).strip()
+        auth_user = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
+        auth_pass = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
+        if username != auth_user or password != auth_pass:
+            self.send_json({"ok": False, "error": "invalid_credentials"}, 401)
+            return
+        token = self._create_admin_session()
+        self.send_json(
+            {"ok": True, "admin": True},
+            extra_headers=[("Set-Cookie", f"nm_admin={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}")],
+        )
 
     def _logout(self):
         self._clear_admin_session()
@@ -835,11 +839,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if k in body:
                 settings[k] = str(body[k])
 
-        # секрети — зберігаємо тільки якщо не порожні
+        # секрети зберігаємо тільки в env, а не в settings.json
         for k in ("anthropic_api_key", "telegram_api_hash", "bot_token"):
-            val = str(body.get(k, "")).strip()
-            if val:
-                settings[k] = val
+            settings.pop(k, None)
 
         # категорії
         if "categories" in body and isinstance(body["categories"], list):
@@ -926,6 +928,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
     def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         super().end_headers()
