@@ -302,6 +302,7 @@ def get_listener_diagnostics() -> dict:
             "name": src.get("name", ""),
             "url": src.get("url", ""),
             "enabled": bool(src.get("enabled", True)),
+            "ai_enabled": bool(src.get("ai_enabled", True)),
             "username": _normalize_tg_username(str(src.get("url", ""))),
             "bound": src_id in bound_by_source,
             "binding": bound_by_source.get(src_id) or unbound_by_source.get(src_id) or {},
@@ -317,28 +318,17 @@ def get_listener_diagnostics() -> dict:
         "unbound_channels": unbound,
     }
 
-
-def detect_telegram_channel_name(username: str) -> str:
-    """Пробує підтягнути назву Telegram-каналу з публічної сторінки t.me."""
-    if not username:
-        return ""
-    try:
-        url = f"https://t.me/{username}"
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (NewsMonitor)"},
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode("utf-8", errors="ignore")
-        m = re.search(r'<meta\\s+property=\"og:title\"\\s+content=\"([^\"]+)\"', body, re.IGNORECASE)
-        if m:
-            title = html.unescape(m.group(1)).strip()
-            if title and title.lower() != "telegram":
-                return title
-    except Exception:
-        pass
-    return ""
+def load_sources_with_defaults() -> dict:
+    sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+    changed = False
+    for t in ("rss", "telegram"):
+        for s in sources.get(t, []):
+            if "ai_enabled" not in s:
+                s["ai_enabled"] = True
+                changed = True
+    if changed:
+        write_json(SOURCES_FILE, sources)
+    return sources
 
 
 def detect_telegram_channel_name(username: str) -> str:
@@ -539,7 +529,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         routes = {
             "/api/news":            self._serve_news,
-            "/api/sources":         lambda: self.send_json(load_json(SOURCES_FILE, DEFAULT_SOURCES)),
+            "/api/sources":         lambda: self.send_json(load_sources_with_defaults()),
             "/api/settings":        self._serve_settings,
             "/api/dashboard/config": self._serve_dashboard_config,
             "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
@@ -567,6 +557,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         admin_only = {
             "/api/sources",
             "/api/sources/toggle",
+            "/api/sources/ai_toggle",
             "/api/sources/rename",
             "/api/settings",
             "/api/news/read",
@@ -582,6 +573,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         routes = {
             "/api/sources":          lambda: self._add_source(body),
             "/api/sources/toggle":   lambda: self._toggle_source(body),
+            "/api/sources/ai_toggle": lambda: self._toggle_source_ai(body),
             "/api/sources/rename":   lambda: self._rename_source(body),
             "/api/settings":         lambda: self._save_settings(body),
             "/api/news/read":        lambda: self._mark_read(body),
@@ -763,7 +755,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
         if any(s["id"] == src_id for s in sources.get(src_type, [])):
             self.send_json({"error": f"Джерело вже існує (id: {src_id})"}, 409); return
-        new_src = {"id": src_id, "name": name, "url": url, "enabled": True}
+        new_src = {"id": src_id, "name": name, "url": url, "enabled": True, "ai_enabled": True}
         sources.setdefault(src_type, []).append(new_src)
         write_json(SOURCES_FILE, sources)
         print(f"  [API] Додано {src_type}: {src_id}")
@@ -780,6 +772,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 s["enabled"] = not s["enabled"]
                 write_json(SOURCES_FILE, sources)
                 self.send_json({"ok": True, "enabled": s["enabled"]}); return
+        self.send_json({"error": "Не знайдено"}, 404)
+
+    def _toggle_source_ai(self, body: dict):
+        src_type = body.get("type", "")
+        src_id   = body.get("id",   "")
+        if not src_type or not src_id:
+            self.send_json({"error": "Невірні параметри"}, 400); return
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        for s in sources.get(src_type, []):
+            if s["id"] == src_id:
+                s["ai_enabled"] = not bool(s.get("ai_enabled", True))
+                write_json(SOURCES_FILE, sources)
+                self.send_json({"ok": True, "ai_enabled": s["ai_enabled"]}); return
         self.send_json({"error": "Не знайдено"}, 404)
 
     def _rename_source(self, body: dict):
@@ -820,7 +825,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 settings[k] = bool(body[k])
 
         # числові
-        for k in ("rss_depth", "tg_depth", "auto_fetch_interval",
+        for k in ("rss_depth", "auto_fetch_interval",
                   "keep_days", "max_items", "digest_count"):
             if k in body:
                 try:

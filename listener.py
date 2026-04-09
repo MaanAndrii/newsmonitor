@@ -107,23 +107,6 @@ def _normalize_channel_username(url_or_name: str) -> str:
                 return parts[0].lstrip("@").lower()
     return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
 
-def _normalize_channel_username(url_or_name: str) -> str:
-    raw = (url_or_name or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith("@"):
-        return raw[1:].lower()
-    if raw.startswith(("http://", "https://")):
-        parsed = urllib.parse.urlparse(raw)
-        host = (parsed.netloc or "").lower()
-        if host.endswith("t.me") or host.endswith("telegram.me"):
-            parts = [p for p in parsed.path.split("/") if p]
-            if parts and parts[0] == "s":
-                parts = parts[1:]
-            if parts:
-                return parts[0].lstrip("@").lower()
-    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
-
 
 # ── Ключові слова ─────────────────────────────────────────────────────────────
 
@@ -360,8 +343,10 @@ async def run_listener():
             return
         src_name = ch_info.get("name", username)
         src_id   = ch_info.get("id", username)
+        source_ai_enabled = bool(ch_info.get("ai_enabled", True))
 
-        item_id = hashlib.md5(f"{username}_{msg.id}".encode()).hexdigest()[:12]
+        channel_key = username or src_id
+        item_id = hashlib.md5(f"{channel_key}_{msg.id}".encode()).hexdigest()[:12]
         if item_id in seen_ids:
             return
 
@@ -372,7 +357,7 @@ async def run_listener():
             "type":             "telegram",
             "title":            msg.text[:120].replace("\n", " ").strip(),
             "text":             msg.text[:600].strip(),
-            "url":              f"https://t.me/{username}/{msg.id}",
+            "url":              f"https://t.me/{channel_key}/{msg.id}",
             "time":             datetime.now(timezone.utc).isoformat(),
             "summary":          "",
             "category":         categories[0]["id"] if categories else "",
@@ -413,7 +398,7 @@ async def run_listener():
                     print(f"    [BOT] {kw_str}")
 
         # AI аналіз
-        if ai_enabled and api_key and categories:
+        if source_ai_enabled and ai_enabled and api_key and categories:
             try:
                 result = analyze_single(item, api_key, categories, ai_model, priorities)
                 if result:

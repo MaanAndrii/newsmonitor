@@ -1,5 +1,5 @@
 """
-fetcher.py — збирає новини з RSS та Telegram, аналізує через Claude API
+fetcher.py — пакетний збір RSS новин та AI-аналіз
 Запуск: python3 fetcher.py
 """
 
@@ -13,11 +13,10 @@ import urllib.parse
 import email.utils
 from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
-from telethon import TelegramClient
 import feedparser
 
 from config import (
-    SOURCES_FILE, SETTINGS_FILE, DATA_FILE, SESSION_FILE,
+    SOURCES_FILE, SETTINGS_FILE, DATA_FILE,
     SEEN_FILE, DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
@@ -288,66 +287,6 @@ def fetch_rss(sources: list, depth: int) -> list:
     return results
 
 
-# ── Telegram (пакетний режим) ─────────────────────────────────────────────────
-
-async def fetch_telegram(sources: list, depth: int,
-                         api_id: int, api_hash: str) -> list:
-    """Збирає повідомлення з Telegram каналів пакетно."""
-    results = []
-    enabled = [s for s in sources if s.get("enabled", True)]
-    if not enabled:
-        print("  [TG] Немає активних каналів")
-        return results
-    if not api_id or not api_hash:
-        print("  [TG] Не налаштовано Telegram API — пропускаємо")
-        return results
-    if not os.path.exists(SESSION_FILE + ".session"):
-        print("  [TG] Немає сесії — авторизуйтесь через інтерфейс")
-        return results
-
-    client = TelegramClient(SESSION_FILE, api_id, api_hash)
-    try:
-        # connect=False щоб не запитувати авторизацію якщо сесія протухла
-        await client.connect()
-        if not await client.is_user_authorized():
-            print("  [TG] Сесія недійсна — авторизуйтесь через інтерфейс")
-            return results
-
-        for ch in enabled:
-            username = ch["url"].rstrip("/").split("/")[-1].lstrip("@")
-            print(f"  [TG] @{username} ({ch['name']}) ...", end=" ", flush=True)
-            count = 0
-            try:
-                async for msg in client.iter_messages(username, limit=depth):
-                    if not msg.text or len(msg.text.strip()) < 10:
-                        continue
-                    item_id = hashlib.md5(
-                        f"{username}_{msg.id}".encode()
-                    ).hexdigest()[:12]
-                    results.append({
-                        "id":        item_id,
-                        "source":    ch["name"],
-                        "source_id": ch["id"],
-                        "type":      "telegram",
-                        "title":     msg.text[:120].replace("\n", " ").strip(),
-                        "text":      msg.text[:600].strip(),
-                        "url":       f"https://t.me/{username}/{msg.id}",
-                        "time":      msg.date.isoformat(),
-                    })
-                    count += 1
-                print(f"{count} повідомлень")
-            except Exception as e:
-                print(f"помилка: {e}")
-    except Exception as e:
-        print(f"  [TG] Помилка підключення: {e}")
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-    return results
-
-
 # ── Головна логіка ────────────────────────────────────────────────────────────
 
 async def run():
@@ -361,10 +300,7 @@ async def run():
     ai_enabled       = bool(settings.get("ai_enabled", False))
     ai_model         = settings.get("ai_model", DEFAULT_AI_MODEL)
     rss_depth        = max(1, int(settings.get("rss_depth", 10)))
-    tg_depth         = max(1, int(settings.get("tg_depth",  10)))
     api_key          = settings.get("anthropic_api_key", "")
-    tg_api_id        = int(settings.get("telegram_api_id", 0) or 0)
-    tg_api_hash      = settings.get("telegram_api_hash", "")
     categories       = settings.get("categories", [])
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
@@ -372,15 +308,16 @@ async def run():
     bot_token        = settings.get("bot_token", "")
     bot_chat_id      = settings.get("bot_chat_id", "")
     priorities       = settings.get("importance_priorities", "")
-    listener_enabled = bool(settings.get("listener_enabled", False))
     api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
-    tg_api_hash      = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", tg_api_hash)
     bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
+    source_ai_enabled = {}
+    for src in (sources.get("rss", []) + sources.get("telegram", [])):
+        source_ai_enabled[src.get("id")] = bool(src.get("ai_enabled", True))
 
     print(f"  AI: {'увімк' if ai_enabled else 'вимк'} | модель: {ai_model}")
-    print(f"  RSS глибина: {rss_depth} | TG глибина: {tg_depth}")
+    print(f"  RSS глибина: {rss_depth}")
     print(f"  Категорій: {len(categories)} | Ключових слів: {len(keywords)}")
-    print(f"  Слухач: {'увімк — TG не збираємо' if listener_enabled else 'вимк'}\n")
+    print("  Telegram пакетний збір: вимкнено (працює тільки listener)\n")
 
     # ── Завантажуємо попередній стан ─────────────────────────────────────────
     seen_ids     = load_seen_ids()
@@ -401,17 +338,8 @@ async def run():
     # ── Збираємо новини ──────────────────────────────────────────────────────
     print("\n[1/4] Збір новин")
     rss_items = fetch_rss(sources.get("rss", []), rss_depth)
-
-    tg_items = []
-    if listener_enabled:
-        print("  [TG] Слухач активний — пропускаємо пакетний збір")
-    else:
-        tg_items = await fetch_telegram(
-            sources.get("telegram", []), tg_depth, tg_api_id, tg_api_hash
-        )
-
-    all_items = rss_items + tg_items
-    print(f"\n  Зібрано: {len(rss_items)} RSS + {len(tg_items)} TG = {len(all_items)}")
+    all_items = list(rss_items)
+    print(f"\n  Зібрано: {len(rss_items)} RSS")
 
     if not all_items:
         print("\nНемає новин для збереження.")
@@ -445,19 +373,20 @@ async def run():
 
     # ── AI аналіз (тільки нові) ──────────────────────────────────────────────
     print()
-    if new_items and ai_enabled and api_key and categories:
-        print(f"[2/4] AI аналіз: {len(new_items)} нових новин | {ai_model}")
+    ai_candidates = [it for it in new_items if source_ai_enabled.get(it.get("source_id"), True)]
+    if ai_candidates and ai_enabled and api_key and categories:
+        print(f"[2/4] AI аналіз: {len(ai_candidates)} нових новин | {ai_model}")
         BATCH = 15
-        for i in range(0, len(new_items), BATCH):
-            batch = new_items[i : i + BATCH]
-            end   = min(i + BATCH, len(new_items))
-            print(f"  [{i+1}–{end}/{len(new_items)}] ...", end=" ", flush=True)
+        for i in range(0, len(ai_candidates), BATCH):
+            batch = ai_candidates[i : i + BATCH]
+            end   = min(i + BATCH, len(ai_candidates))
+            print(f"  [{i+1}–{end}/{len(ai_candidates)}] ...", end=" ", flush=True)
             try:
                 analyses = analyze_batch(batch, api_key, categories, ai_model, priorities)
                 for ai_res in analyses:
-                    idx = i + ai_res["index"] - 1
-                    if 0 <= idx < len(new_items):
-                        new_items[idx].update({
+                    idx = ai_res["index"] - 1
+                    if 0 <= idx < len(batch):
+                        batch[idx].update({
                             "category":     ai_res.get("category", categories[0]["id"]),
                             "importance":   int(ai_res.get("importance", 5)),
                             "is_duplicate": bool(ai_res.get("is_duplicate", False)),
@@ -506,17 +435,16 @@ async def run():
 
     # ── Об'єднання з новинами від слухача ────────────────────────────────────
     print("[3/4] Збереження")
-    if listener_enabled:
-        try:
-            existing = {"items": STORAGE.load_items()}
-            fetcher_ids   = {it["id"] for it in all_items}
-            listener_only = [it for it in existing.get("items", [])
-                             if it["id"] not in fetcher_ids]
-            if listener_only:
-                print(f"  Додаємо {len(listener_only)} новин від слухача")
-                all_items = all_items + listener_only
-        except Exception as e:
-            print(f"  [WARN] Об'єднання з слухачем: {e}")
+    try:
+        existing = {"items": STORAGE.load_items()}
+        fetcher_ids   = {it["id"] for it in all_items}
+        listener_only = [it for it in existing.get("items", [])
+                         if it["id"] not in fetcher_ids]
+        if listener_only:
+            print(f"  Додаємо {len(listener_only)} новин від слухача")
+            all_items = all_items + listener_only
+    except Exception as e:
+        print(f"  [WARN] Об'єднання з слухачем: {e}")
 
     all_items.sort(key=lambda x: x.get("time", ""), reverse=True)
     all_items = cleanup_old_items(all_items, keep_days, max_items)

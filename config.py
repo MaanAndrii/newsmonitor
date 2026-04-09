@@ -12,7 +12,7 @@ SESSION_FILE  = "tg_session"
 LISTENER_FILE = "listener_status.json"
 LOCK_FILE     = "listener.lock"
 DB_FILE       = "newsmonitor.db"
-APP_VERSION   = "2.1"
+APP_VERSION   = "2.5"
 
 # Доступні моделі Claude
 AI_MODELS = [
@@ -47,7 +47,6 @@ DEFAULT_SETTINGS = {
     "importance_priorities":  "",
     # Збір
     "rss_depth":              10,
-    "tg_depth":               10,
     "auto_fetch_interval":    0,
     "listener_enabled":       False,
     # Зберігання

@@ -50,7 +50,7 @@ a { color: inherit; text-decoration: none; }
 .layout { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: start; }
 .layout.filters-hidden { grid-template-columns: 1fr; }
 .layout.filters-hidden .sidebar { display: none; }
-.sidebar { background: #fff; border-radius: 10px; border: 1px solid #e5e5e0; padding: 14px; position: sticky; top: 68px; }
+.sidebar { background: #fff; border-radius: 10px; border: 1px solid #e5e5e0; padding: 14px; position: sticky; top: 68px; max-height: calc(100vh - 84px); overflow-y: auto; }
 .sidebar h3 { font-size: 11px; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
 .filter-group { margin-bottom: 14px; }
 .chip { display: block; width: 100%; text-align: left; font-size: 13px; padding: 6px 10px; border-radius: 7px; border: none; background: transparent; cursor: pointer; color: #444; }
@@ -130,6 +130,11 @@ a { color: inherit; text-decoration: none; }
 .src-table tr:hover td { background: #fafaf8; }
 .row-name { font-size: 13px; font-weight: 500; }
 .row-sub  { font-size: 12px; color: #888; margin-top: 2px; word-break: break-all; }
+.src-activity { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.src-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.src-dot.green  { background: #4caf50; }
+.src-dot.yellow { background: #ef9f27; }
+.src-dot.red    { background: #e53935; }
 .toggle { width: 36px; height: 20px; border-radius: 10px; border: none; cursor: pointer; position: relative; transition: background .2s; flex-shrink: 0; }
 .toggle.on  { background: #185FA5; }
 .toggle.off { background: #d0d0c8; }
@@ -227,7 +232,6 @@ body.compact-mode .imp-num { font-size: 11px; }
     <span class="version-badge" id="app-version">v—</span>
     <div class="tabs">
       <button class="tab on" data-page="dashboard">Дашборд</button>
-      <button class="tab" data-page="sources" id="tab-sources">Джерела</button>
       <button class="tab" data-page="settings" id="tab-settings">Налаштування</button>
     </div>
   </div>
@@ -298,7 +302,7 @@ body.compact-mode .imp-num { font-size: 11px; }
       <div class="panel-title"><span class="badge b-rss">RSS</span> Веб-сайти <span class="panel-count" id="rss-count"></span></div>
     </div>
     <table class="src-table">
-      <thead><tr><th>Назва</th><th>URL стрічки</th><th style="width:170px">Останнє повідомлення</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
+      <thead><tr><th>Назва</th><th>URL стрічки</th><th style="width:150px">Останнє повідомлення</th><th style="width:70px">AI</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
       <tbody id="rss-tbody"></tbody>
     </table>
     <div class="add-form" id="rss-form">
@@ -312,7 +316,7 @@ body.compact-mode .imp-num { font-size: 11px; }
       <div class="panel-title"><span class="badge b-tg">Telegram</span> Канали <span class="panel-count" id="tg-count"></span></div>
     </div>
     <table class="src-table">
-      <thead><tr><th>Назва</th><th>Посилання</th><th style="width:220px">Останнє повідомлення</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
+      <thead><tr><th>Назва</th><th>Посилання</th><th style="width:150px">Останнє повідомлення</th><th style="width:70px">AI</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
       <tbody id="tg-tbody"></tbody>
     </table>
     <div class="add-form" id="tg-form">
@@ -328,6 +332,7 @@ body.compact-mode .imp-num { font-size: 11px; }
   <div class="panel">
     <div class="stabs">
       <button class="stab on" data-stab="general">Загальні</button>
+      <button class="stab" data-stab="sources">Джерела</button>
       <button class="stab" data-stab="telegram-auth">Telegram</button>
       <button class="stab" data-stab="bot">Bot сповіщення</button>
       <button class="stab" data-stab="categories">Категорії</button>
@@ -382,10 +387,6 @@ body.compact-mode .imp-num { font-size: 11px; }
             <input type="number" id="set-rss-depth" min="1" max="100" value="10">
           </div>
           <div class="setting-row">
-            <label>Повідомлень з Telegram (пакетний режим)</label>
-            <input type="number" id="set-tg-depth" min="1" max="100" value="10">
-          </div>
-          <div class="setting-row">
             <label>Автозбір RSS: інтервал у хвилинах (0 = вимкнено)</label>
             <input type="number" id="set-auto-interval" min="0" max="1440" value="0">
             <div class="setting-hint">Рекомендовано: 15–30 хв</div>
@@ -420,6 +421,8 @@ body.compact-mode .imp-num { font-size: 11px; }
         </div>
       </div>
     </div>
+
+    <div class="stab-panel" id="stab-sources"></div>
 
     <!-- Telegram авторизація -->
     <div class="stab-panel" id="stab-telegram-auth">
@@ -642,6 +645,14 @@ function toggleFiltersPanel() {
   const layout = document.querySelector('#page-dashboard .layout');
   if (layout) layout.classList.toggle('filters-hidden');
 }
+function mountSourcesInsideSettings() {
+  const host = document.getElementById('stab-sources');
+  const legacy = document.getElementById('page-sources');
+  if (!host || !legacy || host.dataset.mounted === '1') return;
+  host.innerHTML = legacy.innerHTML;
+  host.dataset.mounted = '1';
+  legacy.remove();
+}
 function applyViewMode() {
   const layout = document.querySelector('#page-dashboard .layout');
   const btn = document.getElementById('mode-btn');
@@ -661,7 +672,6 @@ function toggleViewMode() {
   applyViewMode();
 }
 function updateAdminUI() {
-  document.getElementById('tab-sources').style.display = isAdmin ? '' : 'none';
   document.getElementById('tab-settings').style.display = isAdmin ? '' : 'none';
   document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
   document.getElementById('fetch-btn').style.display = isAdmin ? '' : 'none';
@@ -711,7 +721,6 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('.page').forEach(x => x.classList.remove('on'));
   t.classList.add('on');
   document.getElementById('page-' + t.dataset.page).classList.add('on');
-  if (t.dataset.page === 'sources')  loadSources();
   if (t.dataset.page === 'settings') loadSettings();
 }));
 
@@ -720,6 +729,7 @@ document.querySelectorAll('.stab').forEach(t => t.addEventListener('click', () =
   document.querySelectorAll('.stab-panel').forEach(x => x.classList.remove('on'));
   t.classList.add('on');
   document.getElementById('stab-' + t.dataset.stab).classList.add('on');
+  if (t.dataset.stab === 'sources') loadSources();
   if (t.dataset.stab === 'telegram-auth') checkTgSession();
 }));
 
@@ -1124,7 +1134,7 @@ function renderSrcTable(type, list) {
   countEl.textContent = `${sorted.filter(s=>s.enabled).length} з ${sorted.length} активних`;
   tbody.innerHTML='';
   if (!sorted.length) {
-    tbody.innerHTML=`<tr><td colspan="5" style="text-align:center;color:#aaa;padding:20px">Немає джерел. Додайте нижче.</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="6" style="text-align:center;color:#aaa;padding:20px">Немає джерел. Додайте нижче.</td></tr>`;
     return;
   }
   sorted.forEach(s => {
@@ -1133,13 +1143,15 @@ function renderSrcTable(type, list) {
     let lastHtml = '<span style="color:#bbb">—</span>';
     if (type === 'telegram') {
       if (last && last.time) {
-        lastHtml = `<div style="font-size:12px;color:#1a1a1a">${esc(fmtTime(last.time))}</div>` +
-                   `<div class="row-sub" style="max-width:240px">${esc((last.title||'').slice(0,80))}</div>`;
+        const dt = new Date(last.time);
+        const ageH = isNaN(dt.getTime()) ? 9999 : (Date.now() - dt.getTime()) / 36e5;
+        const cls = ageH <= 12 ? 'green' : (ageH <= 48 ? 'yellow' : 'red');
+        lastHtml = `<div class="src-activity"><span class="src-dot ${cls}"></span><span>${esc(fmtTime(last.time))}</span></div>`;
       } else if (diag.bound === false) {
         const err = (diag.binding && diag.binding.error) ? ` (${esc(diag.binding.error)})` : '';
-        lastHtml = `<div style="font-size:12px;color:#c62828">Не підв'язано${err}</div>`;
+        lastHtml = `<div class="src-activity"><span class="src-dot red"></span><span style="color:#c62828">Не підв'язано${err}</span></div>`;
       } else {
-        lastHtml = '<span style="font-size:12px;color:#999">Ще не було</span>';
+        lastHtml = '<div class="src-activity"><span class="src-dot red"></span><span style="font-size:12px;color:#999">Ще не було</span></div>';
       }
     }
     const tr=document.createElement('tr');
@@ -1147,9 +1159,11 @@ function renderSrcTable(type, list) {
       <td><div class="row-name">${esc(s.name)}</div></td>
       <td><div class="row-sub">${esc(s.url)}</div></td>
       <td>${lastHtml}</td>
+      <td><button class="toggle ${s.ai_enabled===false?'off':'on'}"></button></td>
       <td><button class="toggle ${s.enabled?'on':'off'}"></button></td>
       <td><div style="display:flex;align-items:center;gap:6px;white-space:nowrap"><button class="edit-btn">✎</button><button class="del-btn">✕</button></div></td>`;
-    tr.querySelector('.toggle').addEventListener('click', function() { toggleSrc(type,s.id,this); });
+    tr.querySelectorAll('.toggle')[0].addEventListener('click', function() { toggleSrcAi(type,s.id,this); });
+    tr.querySelectorAll('.toggle')[1].addEventListener('click', function() { toggleSrc(type,s.id,this); });
     tr.querySelector('.edit-btn').addEventListener('click', () => renameSrc(type,s.id,s.name));
     tr.querySelector('.del-btn').addEventListener('click', () => delSrc(type,s.id));
     tbody.appendChild(tr);
@@ -1161,6 +1175,16 @@ async function toggleSrc(type,id,btn) {
   try {
     const d=await api('/api/sources/toggle',{method:'POST',body:JSON.stringify({type,id})});
     if (d.ok) { toast(d.enabled?'Увімкнено':'Вимкнено'); loadSources(); }
+    else toast(d.error||'Помилка',true);
+  } catch { toast("Помилка з'єднання",true); }
+  btn.disabled=false;
+}
+
+async function toggleSrcAi(type,id,btn) {
+  btn.disabled=true;
+  try {
+    const d=await api('/api/sources/ai_toggle',{method:'POST',body:JSON.stringify({type,id})});
+    if (d.ok) { toast(d.ai_enabled?'AI увімкнено':'AI вимкнено'); loadSources(); }
     else toast(d.error||'Помилка',true);
   } catch { toast("Помилка з'єднання",true); }
   btn.disabled=false;
@@ -1332,7 +1356,6 @@ async function loadSettings() {
     document.getElementById('set-ai-model').value      = d.ai_model||'claude-haiku-4-5-20251001';
     document.getElementById('set-priorities').value    = d.importance_priorities||'';
     document.getElementById('set-rss-depth').value     = d.rss_depth||10;
-    document.getElementById('set-tg-depth').value      = d.tg_depth||10;
     document.getElementById('set-auto-interval').value = d.auto_fetch_interval||0;
     document.getElementById('set-keep-days').value     = d.keep_days||14;
     document.getElementById('set-max-items').value     = d.max_items||500;
@@ -1456,7 +1479,6 @@ async function saveSettings() {
     ai_model:              document.getElementById('set-ai-model').value,
     importance_priorities: document.getElementById('set-priorities').value,
     rss_depth:             parseInt(document.getElementById('set-rss-depth').value)||10,
-    tg_depth:              parseInt(document.getElementById('set-tg-depth').value)||10,
     auto_fetch_interval:   parseInt(document.getElementById('set-auto-interval').value)||0,
     keep_days:             parseInt(document.getElementById('set-keep-days').value)||14,
     max_items:             parseInt(document.getElementById('set-max-items').value)||500,
@@ -1489,6 +1511,7 @@ async function saveSettings() {
 
 // ── Ініціалізація ─────────────────────────────────────────────────────────────
 async function init() {
+  mountSourcesInsideSettings();
   try {
     const me = await api('/api/me');
     isAdmin = !!me.admin;
