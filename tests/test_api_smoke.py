@@ -100,9 +100,21 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertIn("total", payload)
 
     def test_settings_update_smoke(self):
-        code, payload = self._post("/api/settings", {"keep_days": 7, "max_items": 123})
+        body = {
+            "keep_days": 7,
+            "max_items": 123,
+            "telegram_api_id": 123456,
+            "telegram_api_hash": "hash_saved",
+            "anthropic_api_key": "anth_saved",
+        }
+        code, payload = self._post("/api/settings", body)
         self.assertEqual(code, 200)
         self.assertTrue(payload["ok"])
+        code, settings = self._get("/api/settings")
+        self.assertEqual(code, 200)
+        self.assertEqual(settings["telegram_api_id"], 123456)
+        self.assertTrue(settings["has_telegram_hash"])
+        self.assertTrue(settings["has_anthropic_key"])
 
     def test_public_dashboard_works_without_admin_session(self):
         os.environ["NEWSMONITOR_AUTH_USER"] = "admin"

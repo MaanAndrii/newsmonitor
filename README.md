@@ -25,6 +25,20 @@ python3 server.py
 
 ## Безпека (обов'язково для продакшну)
 
+### Що таке «секрети» і для чого вони?
+**Секрети** — це чутливі дані, які дають доступ до зовнішніх сервісів або адмін-функцій.
+
+У цьому проєкті це, зокрема:
+- `NEWSMONITOR_AUTH_USER` / `NEWSMONITOR_AUTH_PASS` — вхід в адмінку.
+- `NEWSMONITOR_ANTHROPIC_API_KEY` — доступ до AI-аналізу (Claude API).
+- `NEWSMONITOR_TELEGRAM_API_HASH` (+ `telegram_api_id`) — доступ до Telegram client API.
+- `NEWSMONITOR_BOT_TOKEN` — доступ до Telegram Bot API.
+
+Чому це важливо:
+- якщо секрет витече, стороння людина може керувати вашими інтеграціями або витрачати ваші API-квоти;
+- секрети не можна публікувати в Git, скріншотах, логах або чатах;
+- у продакшні їх краще зберігати в env/systemd variables або в secret manager.
+
 Перед запуском задайте:
 
 ```bash

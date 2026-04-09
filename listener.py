@@ -249,18 +249,23 @@ async def run_listener():
     api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
     bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", "")
 
-    if not api_id or not api_hash:
+    while not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
         LOGGER.error("[LISTENER] %s", msg)
         publish_status("error", msg)
-        return
+        await asyncio.sleep(15)
+        settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        api_id = int(settings.get("telegram_api_id", 0) or 0)
+        api_hash = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", settings.get("telegram_api_hash", ""))
 
     tg_channels = [s for s in sources.get("telegram", []) if s.get("enabled", True)]
-    if not tg_channels:
+    while not tg_channels:
         msg = "Немає активних Telegram каналів."
         LOGGER.warning("[LISTENER] %s", msg)
         publish_status("stopped", msg)
-        return
+        await asyncio.sleep(20)
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        tg_channels = [s for s in sources.get("telegram", []) if s.get("enabled", True)]
 
     channel_map = {}
     for ch in tg_channels:
