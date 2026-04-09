@@ -234,20 +234,20 @@ async def run_listener():
     sources     = load_json(SOURCES_FILE,  DEFAULT_SOURCES)
 
     api_id      = int(settings.get("telegram_api_id",   0) or 0)
-    api_hash    = settings.get("telegram_api_hash", "")
+    api_hash    = ""
     ai_enabled  = bool(settings.get("ai_enabled", False))
     ai_model    = settings.get("ai_model", DEFAULT_AI_MODEL)
-    api_key     = settings.get("anthropic_api_key", "")
+    api_key     = ""
     categories  = settings.get("categories", [])
     keywords    = settings.get("keywords", [])
-    bot_token   = settings.get("bot_token", "")
+    bot_token   = ""
     bot_chat_id = settings.get("bot_chat_id", "")
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
-    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", api_hash)
-    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
-    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
+    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", "")
+    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", "")
 
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
