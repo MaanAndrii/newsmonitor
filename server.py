@@ -444,6 +444,12 @@ def _tg_auth_logout() -> dict:
 
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 
+class NewsMonitorHTTPServer(http.server.ThreadingHTTPServer):
+    """Threaded server to keep UI responsive under slow/broken client connections."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _auth_required(self) -> bool:
         return bool(AUTH_USER and AUTH_PASS)
@@ -919,15 +925,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def send_json(self, data, code: int = 200, extra_headers: list[tuple[str, str]] | None = None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", len(body))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        if extra_headers:
-            for k, v in extra_headers:
-                self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", len(body))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            if extra_headers:
+                for k, v in extra_headers:
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionResetError, BrokenPipeError):
+            # Клієнт розірвав TCP-з'єднання до відправки відповіді.
+            return
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -955,5 +965,5 @@ if __name__ == "__main__":
 
     print(f"Сервер: http://localhost:{PORT}")
     print("Ctrl+C — зупинити\n")
-    with http.server.HTTPServer(("", PORT), Handler) as httpd:
+    with NewsMonitorHTTPServer(("", PORT), Handler) as httpd:
         httpd.serve_forever()
