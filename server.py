@@ -524,6 +524,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p = urlparse(self.path).path
         admin_only = {
             "/api/settings",
@@ -556,6 +559,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         body = self._read_body()
         admin_only = {
@@ -596,6 +602,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
 
     def do_DELETE(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         if p == "/api/sources" and not self._require_admin():
             return
