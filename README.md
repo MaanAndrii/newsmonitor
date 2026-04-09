@@ -194,3 +194,7 @@ cd /home/<user>/newsmonitor \
 - `storage.py` — SQLite storage layer.
 - `utils.py` — retry/backoff + structured logging.
 - `index.html` — UI.
+
+## Версіонування
+- Поточна версія повертається endpoint-ом `GET /api/version`.
+- Для цього проєкту прийнято правило: після кожної зміни підвищувати версію на `0.1`.

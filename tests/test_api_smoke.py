@@ -79,6 +79,19 @@ class ApiSmokeTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
 
+    def _post_with_headers(self, path: str, payload: dict, headers: dict | None = None):
+        final_headers = {"Content-Type": "application/json"}
+        if headers:
+            final_headers.update(headers)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=final_headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8")), dict(resp.headers)
+
     def _get_error(self, path: str):
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5)
@@ -127,6 +140,43 @@ class ApiSmokeTest(unittest.TestCase):
         code, payload = self._get_error("/api/settings")
         self.assertEqual(code, 401)
         self.assertEqual(payload.get("error"), "auth_required")
+
+    def test_keys_are_saved_when_auth_enabled_and_logged_in(self):
+        os.environ["NEWSMONITOR_AUTH_USER"] = "admin"
+        os.environ["NEWSMONITOR_AUTH_PASS"] = "secret"
+
+        code, payload, headers = self._post_with_headers(
+            "/api/login",
+            {"username": "admin", "password": "secret"},
+        )
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
+        cookie = headers.get("Set-Cookie", "")
+        self.assertIn("nm_admin=", cookie)
+
+        save_body = {
+            "telegram_api_id": 777777,
+            "telegram_api_hash": "hash_from_ui",
+            "anthropic_api_key": "anth_from_ui",
+        }
+        code, payload, _ = self._post_with_headers(
+            "/api/settings",
+            save_body,
+            headers={"Cookie": cookie.split(';', 1)[0]},
+        )
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/settings",
+            headers={"Cookie": cookie.split(';', 1)[0]},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        self.assertEqual(body["telegram_api_id"], 777777)
+        self.assertTrue(body["has_telegram_hash"])
+        self.assertTrue(body["has_anthropic_key"])
 
 
 if __name__ == "__main__":

@@ -1502,7 +1502,13 @@ async function saveSettings() {
       document.getElementById('set-tg-hash').value='';
       document.getElementById('set-bot-token').value='';
       loadSettings();
-    } else toast('Помилка збереження',true);
+    } else if (d.error === 'auth_required') {
+      toast('Сесія адміністратора завершилась. Увійдіть знову.', true);
+      isAdmin = false;
+      updateAdminUI();
+    } else {
+      toast(d.error || 'Помилка збереження',true);
+    }
   } catch { toast("Помилка з'єднання",true); }
 }
 
