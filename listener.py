@@ -16,7 +16,13 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    SessionPasswordNeededError,
+    UserAlreadyParticipantError,
+)
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.utils import get_peer_id
 
 from config import (
     SOURCES_FILE, SETTINGS_FILE, DATA_FILE, SESSION_FILE,
@@ -80,6 +86,23 @@ def write_status(status: str, error: str = "") -> None:
         "error":      error,
         "pid":        os.getpid(),
     })
+
+def _normalize_channel_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
 
 
 # ── Ключові слова ─────────────────────────────────────────────────────────────
@@ -241,10 +264,12 @@ async def run_listener():
 
     channel_map = {}
     for ch in tg_channels:
-        username = ch["url"].rstrip("/").split("/")[-1].lstrip("@").lower()
-        channel_map[username] = ch
+        username = _normalize_channel_username(ch.get("url", ""))
+        if username:
+            channel_map[username] = ch
 
     seen_ids = load_seen_ids()
+    channel_peer_map: dict[str, dict] = {}
 
     print(f"[LISTENER] Канали: {', '.join(channel_map.keys())}")
     print(f"[LISTENER] AI: {'увімк' if ai_enabled else 'вимк'} | "
@@ -252,7 +277,25 @@ async def run_listener():
 
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 
-    @client.on(events.NewMessage(chats=list(channel_map.keys())))
+    async def refresh_channel_bindings() -> list[str]:
+        """Резолвить канали в peer-id та намагається доєднатись до публічних."""
+        channel_peer_map.clear()
+        unavailable = []
+        for username, ch in channel_map.items():
+            try:
+                try:
+                    await client(JoinChannelRequest(username))
+                except UserAlreadyParticipantError:
+                    pass
+                except Exception:
+                    pass
+                entity = await client.get_entity(username)
+                channel_peer_map[str(get_peer_id(entity))] = ch
+            except Exception as e:
+                unavailable.append(f"@{username}: {e}")
+        return unavailable
+
+    @client.on(events.NewMessage)
     async def on_new_message(event):
         msg = event.message
         if not msg.text or len(msg.text.strip()) < 10:
@@ -264,7 +307,10 @@ async def run_listener():
         except Exception:
             username = ""
 
-        ch_info  = channel_map.get(username, {})
+        chat_peer = str(getattr(event, "chat_id", "") or "")
+        ch_info  = channel_map.get(username) or channel_peer_map.get(chat_peer, {})
+        if not ch_info:
+            return
         src_name = ch_info.get("name", username)
         src_id   = ch_info.get("id", username)
 
@@ -347,6 +393,13 @@ async def run_listener():
                 print(f"[LISTENER] {msg}")
                 write_status("error", msg)
                 break
+
+            unavailable = await refresh_channel_bindings()
+            if unavailable:
+                short = "; ".join(unavailable[:3])
+                if len(unavailable) > 3:
+                    short += f"; ... (+{len(unavailable)-3})"
+                print(f"[LISTENER] Недоступні канали: {short}")
 
             write_status("running")
             print(f"[LISTENER] Запущено. Слухаємо {len(channel_map)} каналів\n")
