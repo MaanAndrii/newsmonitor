@@ -602,7 +602,7 @@ let countdownTimer = null;
 let lastFinishedAt = null;
 let lastNewsUpdatedAt = null;
 let hasBotToken    = false;
-let isAdmin        = false;
+let isAdmin        = true;
 let viewMode       = 'reader';
 let listenerDiagBySource = {};
 const kwUrgentMap  = {};
@@ -675,44 +675,10 @@ function updateAdminUI() {
   document.getElementById('tab-settings').style.display = isAdmin ? '' : 'none';
   document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
   document.getElementById('fetch-btn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('auth-btn').textContent = isAdmin ? 'Вийти' : 'Увійти';
+  document.getElementById('auth-btn').style.display = 'none';
 }
 async function toggleAuth() {
-  if (isAdmin) {
-    try { await api('/api/logout', {method:'POST', body:'{}'}); } catch {}
-    isAdmin = false;
-    updateAdminUI();
-    try {
-      const ls = await api('/api/listener/status');
-      updateListenerUI(ls);
-      if (ls && ls.status === 'running') {
-        toast('Вихід виконано. Слухач Telegram продовжує працювати.');
-      } else {
-        toast('Вихід виконано');
-      }
-    } catch {
-      toast('Вихід виконано');
-    }
-    await loadNews(true);
-    return;
-  }
-  const username = prompt('Логін адміністратора:');
-  if (username === null) return;
-  const password = prompt('Пароль адміністратора:');
-  if (password === null) return;
-  try {
-    const d = await api('/api/login', {method:'POST', body:JSON.stringify({username, password})});
-    if (d.ok) {
-      isAdmin = true;
-      updateAdminUI();
-      toast('Вхід виконано');
-      await loadNews(true);
-    } else {
-      toast(d.error || 'Помилка авторизації', true);
-    }
-  } catch {
-    toast("Помилка з'єднання", true);
-  }
+  return;
 }
 
 // ── Навігація ─────────────────────────────────────────────────────────────────

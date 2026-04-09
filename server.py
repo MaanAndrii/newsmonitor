@@ -26,13 +26,10 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
 from storage import Storage
-from utils import RetryConfig, retry_call, setup_logging, env_secret
+from utils import RetryConfig, retry_call, env_secret
 
 PORT = 8000
-LOGGER = setup_logging(os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO"))
 STORAGE = Storage()
-AUTH_USER = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
-AUTH_PASS = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
 
 # ── Стан fetcher-а ────────────────────────────────────────────────────────────
 _fetcher_lock   = threading.Lock()
@@ -84,7 +81,7 @@ def _run_fetcher_process():
                     result.stderr.strip() or result.stdout.strip() or
                     f"Fetcher exited with code {result.returncode}"
                 )
-                LOGGER.error(_fetcher_status["error"])
+                print(_fetcher_status["error"])
         except Exception as e:
             _fetcher_status["error"] = str(e)
         finally:
@@ -189,7 +186,6 @@ def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
         return retry_call(
             _send,
             RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.3),
-            LOGGER,
             "telegram_bot_send",
         )
     except Exception as e:
@@ -452,7 +448,7 @@ class NewsMonitorHTTPServer(http.server.ThreadingHTTPServer):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _auth_required(self) -> bool:
-        return bool(AUTH_USER and AUTH_PASS)
+        return False
 
     def _authorized(self) -> bool:
         if not self._auth_required():
@@ -647,19 +643,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         })
 
     def _login(self, body: dict):
-        if not self._auth_required():
-            self.send_json({"ok": True, "admin": True})
-            return
-        username = str(body.get("username", "")).strip()
-        password = str(body.get("password", "")).strip()
-        if username == AUTH_USER and password == AUTH_PASS:
-            token = self._create_admin_session()
-            self.send_json(
-                {"ok": True, "admin": True},
-                extra_headers=[("Set-Cookie", f"nm_admin={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}")],
-            )
-            return
-        self.send_json({"ok": False, "error": "Невірний логін або пароль"}, 401)
+        self.send_json({"ok": True, "admin": True})
 
     def _logout(self):
         self._clear_admin_session()

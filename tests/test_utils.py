@@ -1,6 +1,6 @@
 import unittest
 
-from utils import RetryConfig, retry_call, setup_logging
+from utils import RetryConfig, retry_call
 
 
 class RetryTest(unittest.TestCase):
@@ -16,7 +16,6 @@ class RetryTest(unittest.TestCase):
         result = retry_call(
             unstable,
             RetryConfig(attempts=4, base_delay=0.01, max_delay=0.02, jitter=0),
-            setup_logging("ERROR"),
             "unstable",
         )
         self.assertEqual(result, 42)

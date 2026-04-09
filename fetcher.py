@@ -21,9 +21,8 @@ from config import (
     IMPORTANCE_CRITERIA
 )
 from storage import Storage
-from utils import RetryConfig, retry_call, setup_logging, env_secret
+from utils import RetryConfig, retry_call, env_secret
 
-LOGGER = setup_logging(os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO"))
 STORAGE = Storage()
 
 
@@ -144,7 +143,6 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
         return retry_call(
             _send,
             RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.4),
-            LOGGER,
             "telegram_bot_send",
         )
     except Exception as e:
@@ -219,7 +217,6 @@ def analyze_batch(items: list, api_key: str, categories: list,
             messages=[{"role": "user", "content": prompt}]
         ),
         RetryConfig(attempts=3, base_delay=1.5, max_delay=8.0, jitter=0.3),
-        LOGGER,
         "anthropic_batch_analyze",
     )
     raw = response.content[0].text.strip()
@@ -247,8 +244,7 @@ def fetch_rss(sources: list, depth: int) -> list:
             feed  = retry_call(
                 lambda: feedparser.parse(src["url"]),
                 RetryConfig(attempts=3, base_delay=1.0, max_delay=5.0, jitter=0.2),
-                LOGGER,
-                f"rss_fetch:{src['id']}",
+                    f"rss_fetch:{src['id']}",
             )
             count = 0
             for entry in feed.entries[:depth]:
