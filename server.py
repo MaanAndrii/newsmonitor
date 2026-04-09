@@ -462,16 +462,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def _deny_auth(self):
-        accept = (self.headers.get("Accept", "") or "").lower()
-        if "text/html" in accept:
-            self.send_response(302)
-            self.send_header("Location", "/")
-            self.end_headers()
-            return
-        self.send_json(
-            {"error": "auth_required"},
-            401,
-        )
+        # Не використовуємо редіректи для auth-відмови: це може створювати
+        # redirect loops у браузері/проксі. Повертаємо стабільний JSON 401.
+        self.send_json({"error": "auth_required"}, 401)
 
     def _get_cookie(self, name: str) -> str:
         raw = self.headers.get("Cookie", "")
