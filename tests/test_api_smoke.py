@@ -128,6 +128,10 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(settings["telegram_api_id"], 123456)
         self.assertTrue(settings["has_telegram_hash"])
         self.assertTrue(settings["has_anthropic_key"])
+        code, dbg = self._get("/api/settings/debug")
+        self.assertEqual(code, 200)
+        self.assertEqual(dbg["stored"]["telegram_api_id"], 123456)
+        self.assertTrue(dbg["stored"]["has_telegram_hash"])
 
     def test_public_dashboard_works_without_admin_session(self):
         os.environ["NEWSMONITOR_AUTH_USER"] = "admin"

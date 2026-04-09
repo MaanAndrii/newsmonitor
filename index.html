@@ -179,6 +179,9 @@ a { color: inherit; text-decoration: none; }
 .setting-hint { font-size: 11px; color: #aaa; }
 .setting-hint.ok  { color: #4caf50; }
 .setting-hint.err { color: #e53935; }
+.api-debug-box { margin-top: 12px; padding: 10px 12px; background: #f8f8f5; border: 1px solid #e5e5e0; border-radius: 8px; font-size: 12px; color: #555; line-height: 1.6; }
+.api-debug-box .ok { color: #2e7d32; font-weight: 600; }
+.api-debug-box .bad { color: #c62828; font-weight: 600; }
 .setting-toggle-row { display: flex; align-items: center; justify-content: space-between; }
 .setting-toggle-label { font-size: 14px; font-weight: 500; }
 .setting-toggle-desc  { font-size: 12px; color: #888; margin-top: 2px; }
@@ -371,6 +374,9 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
             <input type="password" id="set-api-key" placeholder="sk-ant-...">
             <div class="setting-hint" id="api-key-hint"></div>
           </div>
+        </div>
+        <div class="api-debug-box" id="api-debug-box">
+          Debug API: очікуємо дані...
         </div>
       </div>
       <div class="setting-section">
@@ -1303,6 +1309,7 @@ async function loadSettings() {
     document.getElementById('api-key-hint').textContent   = d.has_anthropic_key?'✓ Ключ збережено':'Не вказано';
     document.getElementById('tg-hash-hint').textContent   = d.has_telegram_hash?'✓ Hash збережено':'Не вказано';
     document.getElementById('bot-token-hint').textContent = d.has_bot_token?'✓ Токен збережено':'Не вказано';
+    await loadApiDebug();
 
     categories = d.categories||[];
     Object.keys(kwUrgentMap).forEach(k=>delete kwUrgentMap[k]);
@@ -1321,6 +1328,32 @@ async function loadSettings() {
       startCountdown(s.next_fetch_at||null);
     } catch {}
   } catch { toast('Не вдалося завантажити налаштування',true); }
+}
+
+async function loadApiDebug() {
+  const box = document.getElementById('api-debug-box');
+  if (!box || !isAdmin) return;
+  try {
+    const d = await api('/api/settings/debug');
+    const t = d.last_save_at ? fmtTime(new Date(d.last_save_at * 1000).toISOString()) : '—';
+    const stored = d.stored || {};
+    const effective = d.effective || {};
+    const payload = d.last_payload || {};
+    box.innerHTML = `
+      <div><b>Debug API-збереження</b></div>
+      <div>Останнє збереження: <b>${esc(t)}</b></div>
+      <div>Telegram API ID (stored): <b>${esc(stored.telegram_api_id || 0)}</b></div>
+      <div>Stored: Claude ключ <span class="${stored.has_anthropic_key?'ok':'bad'}">${stored.has_anthropic_key?'Є':'Немає'}</span>,
+      TG Hash <span class="${stored.has_telegram_hash?'ok':'bad'}">${stored.has_telegram_hash?'Є':'Немає'}</span>,
+      Bot Token <span class="${stored.has_bot_token?'ok':'bad'}">${stored.has_bot_token?'Є':'Немає'}</span></div>
+      <div>Effective (з урахуванням env): Claude <span class="${effective.has_anthropic_key?'ok':'bad'}">${effective.has_anthropic_key?'Є':'Немає'}</span>,
+      TG Hash <span class="${effective.has_telegram_hash?'ok':'bad'}">${effective.has_telegram_hash?'Є':'Немає'}</span>,
+      Bot Token <span class="${effective.has_bot_token?'ok':'bad'}">${effective.has_bot_token?'Є':'Немає'}</span></div>
+      <div>Останній payload (довжини): Claude=${esc(payload.anthropic_api_key_len||0)}, TG Hash=${esc(payload.telegram_api_hash_len||0)}, Bot=${esc(payload.bot_token_len||0)}</div>
+    `;
+  } catch {
+    box.textContent = 'Debug API: не вдалося отримати дані.';
+  }
 }
 
 // Категорії

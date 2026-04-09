@@ -530,6 +530,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         admin_only = {
             "/api/settings",
+            "/api/settings/debug",
             "/api/sources",
             "/api/refresh",
             "/api/tg/session",
@@ -541,6 +542,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/news":            self._serve_news,
             "/api/sources":         lambda: self.send_json(load_sources_with_defaults()),
             "/api/settings":        self._serve_settings,
+            "/api/settings/debug":  self._serve_settings_debug,
             "/api/dashboard/config": self._serve_dashboard_config,
             "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
             "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
@@ -648,6 +650,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         safe["has_bot_token"]     = bool(s.get("bot_token"))
         safe["auth_enabled"]      = self._auth_required()
         self.send_json(safe)
+
+    def _serve_settings_debug(self):
+        raw = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        resolved = resolve_settings_with_env(raw)
+        debug = STORAGE.get_kv("settings_debug", {})
+        if not isinstance(debug, dict):
+            debug = {}
+        self.send_json({
+            "last_save_at": debug.get("saved_at"),
+            "last_payload": debug.get("payload", {}),
+            "stored": {
+                "telegram_api_id": int(raw.get("telegram_api_id", 0) or 0),
+                "has_anthropic_key": bool(raw.get("anthropic_api_key")),
+                "has_telegram_hash": bool(raw.get("telegram_api_hash")),
+                "has_bot_token": bool(raw.get("bot_token")),
+            },
+            "effective": {
+                "has_anthropic_key": bool(resolved.get("anthropic_api_key")),
+                "has_telegram_hash": bool(resolved.get("telegram_api_hash")),
+                "has_bot_token": bool(resolved.get("bot_token")),
+            },
+        })
 
     def _serve_dashboard_config(self):
         s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
@@ -900,6 +924,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             settings["keywords"] = kws
 
         write_json(SETTINGS_FILE, settings)
+        STORAGE.set_kv("settings_debug", {
+            "saved_at": time.time(),
+            "payload": {
+                "telegram_api_id": int(settings.get("telegram_api_id", 0) or 0),
+                "anthropic_api_key_len": len(str(body.get("anthropic_api_key", ""))),
+                "telegram_api_hash_len": len(str(body.get("telegram_api_hash", ""))),
+                "bot_token_len": len(str(body.get("bot_token", ""))),
+            },
+        })
         _schedule_auto_fetch(settings.get("auto_fetch_interval", 0))
         _schedule_digest(settings.get("digest_time", "09:00"),
                          settings.get("digest_enabled", False))
