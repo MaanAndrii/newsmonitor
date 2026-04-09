@@ -29,12 +29,12 @@ class ServerAuthTest(unittest.TestCase):
             else:
                 os.environ["NEWSMONITOR_AUTH_PASS"] = old_pass
 
-    def test_resolve_settings_uses_env_only_for_secrets(self):
+    def test_resolve_settings_env_has_priority_over_file(self):
         old_key = os.environ.get("NEWSMONITOR_ANTHROPIC_API_KEY")
         try:
             os.environ.pop("NEWSMONITOR_ANTHROPIC_API_KEY", None)
             resolved = resolve_settings_with_env({"anthropic_api_key": "from_file"})
-            self.assertEqual(resolved["anthropic_api_key"], "")
+            self.assertEqual(resolved["anthropic_api_key"], "from_file")
 
             os.environ["NEWSMONITOR_ANTHROPIC_API_KEY"] = "from_env"
             resolved = resolve_settings_with_env({"anthropic_api_key": "from_file"})

@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+import urllib.error
 
 import server
 from io_utils import write_json
@@ -78,6 +79,13 @@ class ApiSmokeTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
 
+    def _get_error(self, path: str):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5)
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+        raise AssertionError("Expected HTTPError")
+
     def test_health_endpoint(self):
         code, payload = self._get("/api/health")
         self.assertEqual(code, 200)
@@ -95,6 +103,18 @@ class ApiSmokeTest(unittest.TestCase):
         code, payload = self._post("/api/settings", {"keep_days": 7, "max_items": 123})
         self.assertEqual(code, 200)
         self.assertTrue(payload["ok"])
+
+    def test_public_dashboard_works_without_admin_session(self):
+        os.environ["NEWSMONITOR_AUTH_USER"] = "admin"
+        os.environ["NEWSMONITOR_AUTH_PASS"] = "secret"
+
+        code, payload = self._get("/api/news")
+        self.assertEqual(code, 200)
+        self.assertIn("items", payload)
+
+        code, payload = self._get_error("/api/settings")
+        self.assertEqual(code, 401)
+        self.assertEqual(payload.get("error"), "auth_required")
 
 
 if __name__ == "__main__":

@@ -35,7 +35,8 @@ export NEWSMONITOR_TELEGRAM_API_HASH='...'
 export NEWSMONITOR_BOT_TOKEN='...'
 ```
 
-> Починаючи з поточної версії секрети читаються **лише з env** і не зберігаються у `settings.json`.
+> Секрети можуть бути збережені в `settings.json`, але значення з env мають пріоритет
+> (`NEWSMONITOR_ANTHROPIC_API_KEY`, `NEWSMONITOR_TELEGRAM_API_HASH`, `NEWSMONITOR_BOT_TOKEN`).
 > Для веб-адмінки увімкніть авторизацію:
 >
 > ```bash
@@ -135,6 +136,8 @@ git push origin <branch>
 ### 2) На Raspberry Pi
 ```bash
 cd /home/<user>/newsmonitor
+git fetch --all --prune
+git checkout <branch>
 git pull origin <branch>
 /home/<user>/newsmonitor/.venv/bin/pip install -r requirements.txt
 sudo systemctl restart newsmonitor-server newsmonitor-listener
@@ -145,6 +148,20 @@ sudo systemctl restart newsmonitor-server newsmonitor-listener
 curl -u <user>:<pass> http://127.0.0.1:8000/api/version
 curl -u <user>:<pass> http://127.0.0.1:8000/api/health
 ```
+
+### 4) Рекомендований швидкий сценарій оновлення (копіпаст)
+```bash
+cd /home/<user>/newsmonitor \
+&& git fetch --all --prune \
+&& git checkout <branch> \
+&& git pull --ff-only origin <branch> \
+&& /home/<user>/newsmonitor/.venv/bin/pip install -r requirements.txt \
+&& sudo systemctl restart newsmonitor-server newsmonitor-listener \
+&& curl -u <user>:<pass> http://127.0.0.1:8000/api/health
+```
+
+> Якщо `git pull --ff-only` не проходить (локальні зміни на Pi), спочатку збережіть їх:
+> `git stash -u`, потім зробіть `pull`, а далі `git stash pop` за потреби.
 
 ## Troubleshooting: кнопка "Зібрати новини" не дає результату
 

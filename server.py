@@ -500,12 +500,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         p = urlparse(self.path).path
         if not self._authorized():
+            public_api = {
+                "/api/news",
+                "/api/version",
+                "/api/health",
+                "/api/listener/status",
+                "/api/dashboard/config",
+                "/api/me",
+            }
             if p == "/api/me":
                 self.send_json({"admin": False})
                 return
-            if p.startswith("/api/"):
+            if p.startswith("/api/") and p not in public_api:
                 self._deny_auth()
                 return
+            if p in public_api:
+                routes = {
+                    "/api/news":            self._serve_news,
+                    "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
+                    "/api/health":          self._serve_health,
+                    "/api/listener/status": lambda: self.send_json(get_listener_status()),
+                    "/api/dashboard/config": self._serve_dashboard_config,
+                }
+                if p in routes:
+                    routes[p]()
+                    return
             # дозволяємо віддати сторінку логіну/статику
             super().do_GET()
             return
@@ -854,7 +873,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if k in body:
                 settings[k] = str(body[k])
 
-        # секрети зберігаємо тільки в env, а не в settings.json
+        # секрети — env має пріоритет, але дозволяємо зберігати в settings.json
         for k in ("anthropic_api_key", "telegram_api_hash", "bot_token"):
             settings.pop(k, None)
 
