@@ -341,6 +341,29 @@ def detect_telegram_channel_name(username: str) -> str:
     return ""
 
 
+def detect_telegram_channel_name(username: str) -> str:
+    """Пробує підтягнути назву Telegram-каналу з публічної сторінки t.me."""
+    if not username:
+        return ""
+    try:
+        url = f"https://t.me/{username}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (NewsMonitor)"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r'<meta\\s+property=\"og:title\"\\s+content=\"([^\"]+)\"', body, re.IGNORECASE)
+        if m:
+            title = html.unescape(m.group(1)).strip()
+            if title and title.lower() != "telegram":
+                return title
+    except Exception:
+        pass
+    return ""
+
+
 # ── Авторизація Telegram ──────────────────────────────────────────────────────
 
 def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
@@ -501,6 +524,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p = urlparse(self.path).path
         admin_only = {
             "/api/settings",
@@ -533,6 +559,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         body = self._read_body()
         admin_only = {
@@ -571,6 +600,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
 
     def do_DELETE(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         if p == "/api/sources" and not self._require_admin():
             return

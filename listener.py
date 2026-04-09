@@ -107,6 +107,23 @@ def _normalize_channel_username(url_or_name: str) -> str:
                 return parts[0].lstrip("@").lower()
     return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
 
+def _normalize_channel_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
+
 
 # ── Ключові слова ─────────────────────────────────────────────────────────────
 
