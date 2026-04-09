@@ -220,9 +220,9 @@ def save_read_ids(ids: set) -> None:
 
 def resolve_settings_with_env(settings: dict) -> dict:
     merged = dict(settings)
-    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", merged.get("anthropic_api_key", ""))
-    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", merged.get("telegram_api_hash", ""))
-    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", merged.get("bot_token", ""))
+    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", "")
+    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", "")
     return merged
 
 def get_listener_status() -> dict:
