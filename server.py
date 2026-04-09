@@ -9,8 +9,12 @@ import os
 import hashlib
 import asyncio
 import subprocess
+import sys
+import re
+import html
 import threading
 import time
+import secrets
 import urllib.request
 import urllib.parse
 from urllib.parse import urlparse
@@ -18,10 +22,16 @@ from urllib.parse import urlparse
 from config import (
     SOURCES_FILE, SETTINGS_FILE, DATA_FILE, READ_FILE,
     LISTENER_FILE, SESSION_FILE,
-    DEFAULT_SOURCES, DEFAULT_SETTINGS
+    DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
+from storage import Storage
+from utils import RetryConfig, retry_call, setup_logging, env_secret
 
 PORT = 8000
+LOGGER = setup_logging(os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO"))
+STORAGE = Storage()
+AUTH_USER = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
+AUTH_PASS = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
 
 # ── Стан fetcher-а ────────────────────────────────────────────────────────────
 _fetcher_lock   = threading.Lock()
@@ -45,6 +55,8 @@ _tg_auth: dict = {
     "loop":     None,
 }
 _tg_auth_lock = threading.Lock()
+_admin_sessions: dict[str, float] = {}
+SESSION_TTL_SECONDS = 60 * 60 * 12
 
 
 # ── Fetcher ───────────────────────────────────────────────────────────────────
@@ -60,7 +72,18 @@ def _run_fetcher_process():
 
     def _do():
         try:
-            subprocess.run(["python3", "fetcher.py"], check=False)
+            result = subprocess.run(
+                [sys.executable, "fetcher.py"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                _fetcher_status["error"] = (
+                    result.stderr.strip() or result.stdout.strip() or
+                    f"Fetcher exited with code {result.returncode}"
+                )
+                LOGGER.error(_fetcher_status["error"])
         except Exception as e:
             _fetcher_status["error"] = str(e)
         finally:
@@ -130,11 +153,8 @@ def _digest_tick(digest_time: str):
 
 
 def _send_digest(bot_token: str, chat_id: str, count: int):
-    if not os.path.exists(DATA_FILE):
-        return
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = {"items": STORAGE.load_items()}
         top = sorted(data.get("items", []),
                      key=lambda x: x.get("importance", 0), reverse=True)[:count]
         if not top:
@@ -153,18 +173,26 @@ def _send_digest(bot_token: str, chat_id: str, count: int):
 
 def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
     try:
-        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id":                  chat_id,
-            "text":                     text,
-            "parse_mode":               "HTML",
-            "disable_web_page_preview": "true",
-        }).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()).get("ok", False)
+        def _send():
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id":                  chat_id,
+                "text":                     text,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": "true",
+            }).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read()).get("ok", False)
+
+        return retry_call(
+            _send,
+            RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.3),
+            LOGGER,
+            "telegram_bot_send",
+        )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.error(f"  [BOT] {e}")
         return False
 
 
@@ -192,16 +220,29 @@ def write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 def load_read_ids() -> set:
+    ids = STORAGE.load_read_ids()
+    if ids:
+        return ids
     if not os.path.exists(READ_FILE):
         return set()
     try:
         with open(READ_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            ids = set(json.load(f))
+        STORAGE.save_read_ids(ids)
+        return ids
     except Exception:
         return set()
 
 def save_read_ids(ids: set) -> None:
+    STORAGE.save_read_ids(ids)
     write_json(READ_FILE, sorted(ids))
+
+def resolve_settings_with_env(settings: dict) -> dict:
+    merged = dict(settings)
+    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", merged.get("anthropic_api_key", ""))
+    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", merged.get("telegram_api_hash", ""))
+    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", merged.get("bot_token", ""))
+    return merged
 
 def get_listener_status() -> dict:
     if not os.path.exists(LISTENER_FILE):
@@ -215,6 +256,101 @@ def get_listener_status() -> dict:
         return data
     except Exception:
         return {"status": "error", "updated_at": None, "error": "Cannot read status"}
+
+def _normalize_tg_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
+
+def get_listener_diagnostics() -> dict:
+    status = get_listener_status()
+    diag = status.get("diagnostics") if isinstance(status, dict) else {}
+    if not isinstance(diag, dict):
+        diag = {}
+    bound = diag.get("bound_channels", [])
+    unbound = diag.get("unbound_channels", [])
+    last_by_source = diag.get("last_message_by_source", {})
+    if not isinstance(bound, list):
+        bound = []
+    if not isinstance(unbound, list):
+        unbound = []
+    if not isinstance(last_by_source, dict):
+        last_by_source = {}
+
+    bound_by_source = {str(x.get("source_id")): x for x in bound if isinstance(x, dict)}
+    unbound_by_source = {str(x.get("source_id")): x for x in unbound if isinstance(x, dict)}
+
+    sources = load_json(SOURCES_FILE, DEFAULT_SOURCES).get("telegram", [])
+    items = []
+    for src in sources:
+        src_id = str(src.get("id", ""))
+        items.append({
+            "id": src_id,
+            "name": src.get("name", ""),
+            "url": src.get("url", ""),
+            "enabled": bool(src.get("enabled", True)),
+            "ai_enabled": bool(src.get("ai_enabled", True)),
+            "username": _normalize_tg_username(str(src.get("url", ""))),
+            "bound": src_id in bound_by_source,
+            "binding": bound_by_source.get(src_id) or unbound_by_source.get(src_id) or {},
+            "last_message": last_by_source.get(src_id),
+        })
+
+    return {
+        "ok": True,
+        "status": status.get("status", "unknown"),
+        "updated_at": status.get("updated_at"),
+        "sources": items,
+        "bound_channels": bound,
+        "unbound_channels": unbound,
+    }
+
+def load_sources_with_defaults() -> dict:
+    sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+    changed = False
+    for t in ("rss", "telegram"):
+        for s in sources.get(t, []):
+            if "ai_enabled" not in s:
+                s["ai_enabled"] = True
+                changed = True
+    if changed:
+        write_json(SOURCES_FILE, sources)
+    return sources
+
+
+def detect_telegram_channel_name(username: str) -> str:
+    """Пробує підтягнути назву Telegram-каналу з публічної сторінки t.me."""
+    if not username:
+        return ""
+    try:
+        url = f"https://t.me/{username}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (NewsMonitor)"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r'<meta\\s+property=\"og:title\"\\s+content=\"([^\"]+)\"', body, re.IGNORECASE)
+        if m:
+            title = html.unescape(m.group(1)).strip()
+            if title and title.lower() != "telegram":
+                return title
+    except Exception:
+        pass
+    return ""
 
 
 # ── Авторизація Telegram ──────────────────────────────────────────────────────
@@ -307,7 +443,60 @@ def _tg_auth_logout() -> dict:
 
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 
+class NewsMonitorHTTPServer(http.server.ThreadingHTTPServer):
+    """Threaded server to keep UI responsive under slow/broken client connections."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def _auth_required(self) -> bool:
+        return bool(AUTH_USER and AUTH_PASS)
+
+    def _authorized(self) -> bool:
+        if not self._auth_required():
+            return True
+        # Тільки session-cookie auth для веб-адмінки.
+        # Не використовуємо browser-level Basic Auth, щоб після logout+F5
+        # сесія не "поверталась" автоматично.
+        token = self._get_cookie("nm_admin")
+        if token:
+            exp = _admin_sessions.get(token)
+            if exp and exp > time.time():
+                return True
+        return False
+
+    def _deny_auth(self):
+        # Не використовуємо редіректи для auth-відмови: це може створювати
+        # redirect loops у браузері/проксі. Повертаємо стабільний JSON 401.
+        self.send_json({"error": "auth_required"}, 401)
+
+    def _get_cookie(self, name: str) -> str:
+        raw = self.headers.get("Cookie", "")
+        for part in raw.split(";"):
+            p = part.strip()
+            if p.startswith(name + "="):
+                return p.split("=", 1)[1]
+        return ""
+
+    def _create_admin_session(self) -> str:
+        token = secrets.token_urlsafe(24)
+        _admin_sessions[token] = time.time() + SESSION_TTL_SECONDS
+        return token
+
+    def _clear_admin_session(self):
+        token = self._get_cookie("nm_admin")
+        if token and token in _admin_sessions:
+            _admin_sessions.pop(token, None)
+
+    def _require_admin(self) -> bool:
+        if not self._auth_required():
+            return True
+        if self._authorized():
+            return True
+        self._deny_auth()
+        return False
+
 
     def _read_body(self) -> dict:
         try:
@@ -329,26 +518,52 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         p = urlparse(self.path).path
         routes = {
             "/api/news":            self._serve_news,
-            "/api/sources":         lambda: self.send_json(load_json(SOURCES_FILE, DEFAULT_SOURCES)),
+            "/api/sources":         lambda: self.send_json(load_sources_with_defaults()),
             "/api/settings":        self._serve_settings,
+            "/api/dashboard/config": self._serve_dashboard_config,
+            "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
+            "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
             "/api/status":          lambda: self.send_json(dict(_fetcher_status)),
+            "/api/health":          self._serve_health,
             "/api/listener/status": lambda: self.send_json(get_listener_status()),
+            "/api/listener/diagnostics": lambda: self.send_json(get_listener_diagnostics()),
             "/api/refresh":         self._start_fetcher,
             "/api/tg/session":      self._tg_session_status,
         }
         if p in routes:
             routes[p]()
         else:
-            if p in ("/", ""):
-                self.path = "/index.html"
+            if p.startswith("/api/"):
+                self.send_json({"error": "Not found"}, 404)
+                return
+            # SPA fallback: будь-який не-API шлях відкриває дашборд.
+            self.path = "/index.html"
             super().do_GET()
 
     def do_POST(self):
         p    = urlparse(self.path).path
         body = self._read_body()
+        admin_only = {
+            "/api/sources",
+            "/api/sources/toggle",
+            "/api/sources/ai_toggle",
+            "/api/sources/rename",
+            "/api/settings",
+            "/api/news/read",
+            "/api/news/unread",
+            "/api/news/clear_read",
+            "/api/news/send",
+            "/api/tg/send_code",
+            "/api/tg/sign_in",
+            "/api/tg/logout",
+        }
+        if p in admin_only and not self._require_admin():
+            return
         routes = {
             "/api/sources":          lambda: self._add_source(body),
             "/api/sources/toggle":   lambda: self._toggle_source(body),
+            "/api/sources/ai_toggle": lambda: self._toggle_source_ai(body),
+            "/api/sources/rename":   lambda: self._rename_source(body),
             "/api/settings":         lambda: self._save_settings(body),
             "/api/news/read":        lambda: self._mark_read(body),
             "/api/news/unread":      lambda: self._mark_unread(body),
@@ -357,6 +572,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code":     lambda: self._tg_send_code(body),
             "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
             "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
+            "/api/login":            lambda: self._login(body),
+            "/api/logout":           self._logout,
         }
         if p in routes:
             routes[p]()
@@ -365,6 +582,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         p    = urlparse(self.path).path
+        if p == "/api/sources" and not self._require_admin():
+            return
         body = self._read_body()
         if p == "/api/sources":
             self._delete_source(body)
@@ -374,11 +593,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # ── GET ───────────────────────────────────────────────────────────────────
 
     def _serve_news(self):
-        if not os.path.exists(DATA_FILE):
-            self.send_json({"error": "no data"}, 404); return
         try:
-            with open(DATA_FILE, "rb") as f:
-                body = f.read()
+            new_count = int(STORAGE.get_kv("new_count", 0) or 0)
+            payload = STORAGE.export_news_payload(
+                ai_enabled=bool(resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS)).get("ai_enabled", False)),
+                new_count=max(0, new_count),
+            )
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", len(body))
@@ -390,19 +611,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _serve_settings(self):
         s    = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s    = resolve_settings_with_env(s)
         safe = {k: v for k, v in s.items()
                 if k not in ("anthropic_api_key", "telegram_api_hash", "bot_token")}
         safe["has_anthropic_key"] = bool(s.get("anthropic_api_key"))
         safe["has_telegram_hash"] = bool(s.get("telegram_api_hash"))
         safe["has_bot_token"]     = bool(s.get("bot_token"))
+        safe["auth_enabled"]      = self._auth_required()
         self.send_json(safe)
+
+    def _serve_dashboard_config(self):
+        s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
+        self.send_json({
+            "categories": s.get("categories", []),
+            "keywords":   s.get("keywords", []),
+        })
+
+    def _login(self, body: dict):
+        if not self._auth_required():
+            self.send_json({"ok": True, "admin": True})
+            return
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", "")).strip()
+        if username == AUTH_USER and password == AUTH_PASS:
+            token = self._create_admin_session()
+            self.send_json(
+                {"ok": True, "admin": True},
+                extra_headers=[("Set-Cookie", f"nm_admin={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}")],
+            )
+            return
+        self.send_json({"ok": False, "error": "Невірний логін або пароль"}, 401)
+
+    def _logout(self):
+        self._clear_admin_session()
+        self.send_json(
+            {"ok": True},
+            extra_headers=[("Set-Cookie", "nm_admin=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")],
+        )
+
+    def _serve_health(self):
+        self.send_json({
+            "ok": True,
+            "ts": time.time(),
+            "fetcher_running": _fetcher_status["running"],
+            "listener": get_listener_status().get("status", "unknown"),
+            "db_path": STORAGE.path,
+        })
 
     def _tg_session_status(self):
         has_session = os.path.exists(SESSION_FILE + ".session")
         if not has_session:
             self.send_json({"authorized": False}); return
         # перевіряємо чи сесія дійсна
-        s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         api_id   = int(s.get("telegram_api_id",   0) or 0)
         api_hash = s.get("telegram_api_hash", "")
         if not api_id or not api_hash:
@@ -462,20 +723,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         src_type = body.get("type", "")
         name     = str(body.get("name", "")).strip()
         url      = str(body.get("url",  "")).strip()
-        if src_type not in ("rss", "telegram") or not name or not url:
+        if src_type not in ("rss", "telegram") or not url:
             self.send_json({"error": "Заповніть всі поля"}, 400); return
+        if src_type == "rss" and not name:
+            self.send_json({"error": "Для RSS вкажіть назву"}, 400); return
         if src_type == "telegram":
             if url.startswith("@"):
                 url = "https://t.me/" + url[1:]
             elif not url.startswith("http"):
                 url = "https://t.me/" + url
             src_id = url.rstrip("/").split("/")[-1].lstrip("@").lower()
+            if not name:
+                auto_name = detect_telegram_channel_name(src_id)
+                name = auto_name or src_id
         else:
             src_id = "rss_" + hashlib.md5(url.encode()).hexdigest()[:8]
         sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
         if any(s["id"] == src_id for s in sources.get(src_type, [])):
             self.send_json({"error": f"Джерело вже існує (id: {src_id})"}, 409); return
-        new_src = {"id": src_id, "name": name, "url": url, "enabled": True}
+        new_src = {"id": src_id, "name": name, "url": url, "enabled": True, "ai_enabled": True}
         sources.setdefault(src_type, []).append(new_src)
         write_json(SOURCES_FILE, sources)
         print(f"  [API] Додано {src_type}: {src_id}")
@@ -494,6 +760,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "enabled": s["enabled"]}); return
         self.send_json({"error": "Не знайдено"}, 404)
 
+    def _toggle_source_ai(self, body: dict):
+        src_type = body.get("type", "")
+        src_id   = body.get("id",   "")
+        if not src_type or not src_id:
+            self.send_json({"error": "Невірні параметри"}, 400); return
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        for s in sources.get(src_type, []):
+            if s["id"] == src_id:
+                s["ai_enabled"] = not bool(s.get("ai_enabled", True))
+                write_json(SOURCES_FILE, sources)
+                self.send_json({"ok": True, "ai_enabled": s["ai_enabled"]}); return
+        self.send_json({"error": "Не знайдено"}, 404)
+
+    def _rename_source(self, body: dict):
+        src_type = str(body.get("type", "")).strip()
+        src_id   = str(body.get("id", "")).strip()
+        name     = str(body.get("name", "")).strip()
+        if src_type not in ("rss", "telegram") or not src_id or not name:
+            self.send_json({"error": "Невірні параметри"}, 400); return
+        sources = load_json(SOURCES_FILE, DEFAULT_SOURCES)
+        for s in sources.get(src_type, []):
+            if s["id"] == src_id:
+                s["name"] = name
+                write_json(SOURCES_FILE, sources)
+                self.send_json({"ok": True, "name": name}); return
+        self.send_json({"error": "Не знайдено"}, 404)
+
     def _delete_source(self, body: dict):
         src_type = body.get("type", "")
         src_id   = body.get("id",   "")
@@ -506,6 +799,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Не знайдено"}, 404); return
         sources[src_type] = filtered
         write_json(SOURCES_FILE, sources)
+        STORAGE.delete_items_by_source_id(src_id)
         self.send_json({"ok": True})
 
     def _save_settings(self, body: dict):
@@ -517,7 +811,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 settings[k] = bool(body[k])
 
         # числові
-        for k in ("rss_depth", "tg_depth", "auto_fetch_interval",
+        for k in ("rss_depth", "auto_fetch_interval",
                   "keep_days", "max_items", "digest_count"):
             if k in body:
                 try:
@@ -573,15 +867,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         item_id = str(body.get("id", "")).strip()
         if not item_id:
             self.send_json({"error": "Немає id"}, 400); return
-        s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         bot_token   = s.get("bot_token", "")
         bot_chat_id = s.get("bot_chat_id", "")
         if not bot_token or not bot_chat_id:
             self.send_json({"error": "Налаштуйте Bot Token і Chat ID"}, 400); return
-        if not os.path.exists(DATA_FILE):
-            self.send_json({"error": "Немає даних"}, 404); return
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = {"items": STORAGE.load_items()}
         item = next((it for it in data.get("items", []) if it["id"] == item_id), None)
         if not item:
             self.send_json({"error": "Новину не знайдено"}, 404); return
@@ -613,14 +904,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ── Відповіді ─────────────────────────────────────────────────────────────
 
-    def send_json(self, data, code: int = 200):
+    def send_json(self, data, code: int = 200, extra_headers: list[tuple[str, str]] | None = None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", len(body))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", len(body))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            if extra_headers:
+                for k, v in extra_headers:
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionResetError, BrokenPipeError):
+            # Клієнт розірвав TCP-з'єднання до відправки відповіді.
+            return
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -648,5 +946,5 @@ if __name__ == "__main__":
 
     print(f"Сервер: http://localhost:{PORT}")
     print("Ctrl+C — зупинити\n")
-    with http.server.HTTPServer(("", PORT), Handler) as httpd:
+    with NewsMonitorHTTPServer(("", PORT), Handler) as httpd:
         httpd.serve_forever()
