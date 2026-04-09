@@ -38,6 +38,7 @@ _fetcher_status = {
     "running":       False,
     "started_at":    None,
     "finished_at":   None,
+    "last_success_at": None,
     "error":         None,
     "next_fetch_at": None,
 }
@@ -83,6 +84,8 @@ def _run_fetcher_process():
                     f"Fetcher exited with code {result.returncode}"
                 )
                 LOGGER.error(_fetcher_status["error"])
+            else:
+                _fetcher_status["last_success_at"] = time.time()
         except Exception as e:
             _fetcher_status["error"] = str(e)
             LOGGER.exception("Fetcher process failed")
@@ -659,11 +662,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         )
 
     def _serve_health(self):
+        now = time.time()
+        listener = get_listener_status()
+        listener_updated = listener.get("updated_at") if isinstance(listener, dict) else None
         self.send_json({
             "ok": True,
-            "ts": time.time(),
+            "ts": now,
             "fetcher_running": _fetcher_status["running"],
-            "listener": get_listener_status().get("status", "unknown"),
+            "fetcher_last_error": _fetcher_status.get("error"),
+            "fetcher_last_success_age_sec": (
+                round(now - _fetcher_status["last_success_at"], 2)
+                if _fetcher_status.get("last_success_at") else None
+            ),
+            "listener": listener.get("status", "unknown"),
+            "listener_last_error": listener.get("error", ""),
+            "listener_heartbeat_age_sec": (
+                round(now - listener_updated, 2) if listener_updated else None
+            ),
             "db_path": STORAGE.path,
         })
 

@@ -109,6 +109,11 @@ journalctl -u newsmonitor-server -f
 python -m unittest discover -s tests
 ```
 
+CI запускає:
+- `ruff check io_utils.py tests`
+- `python -m unittest discover -s tests`
+- `python -m py_compile server.py fetcher.py listener.py io_utils.py storage.py utils.py`
+
 ## Legacy JSON snapshot (опційно)
 
 За замовчуванням API працює зі SQLite як єдиним джерелом істини.
@@ -145,6 +150,8 @@ curl -u <user>:<pass> http://127.0.0.1:8000/api/health
 
 - Перевірте `/api/status`: якщо `error` не порожній, fetcher падає під час запуску.
 - Сервер запускає `fetcher.py` тим самим Python-інтерпретатором, яким запущений `server.py`, тому важливо стартувати сервіс через `.venv/bin/python3`.
+
+Детальні інструкції з інцидентів — у `RUNBOOK.md`.
 
 ---
 
