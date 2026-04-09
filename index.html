@@ -671,7 +671,17 @@ async function toggleAuth() {
     try { await api('/api/logout', {method:'POST', body:'{}'}); } catch {}
     isAdmin = false;
     updateAdminUI();
-    toast('Вихід виконано');
+    try {
+      const ls = await api('/api/listener/status');
+      updateListenerUI(ls);
+      if (ls && ls.status === 'running') {
+        toast('Вихід виконано. Слухач Telegram продовжує працювати.');
+      } else {
+        toast('Вихід виконано');
+      }
+    } catch {
+      toast('Вихід виконано');
+    }
     await loadNews(true);
     return;
   }
