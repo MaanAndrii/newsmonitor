@@ -26,6 +26,7 @@ from utils import RetryConfig, retry_call, env_secret, setup_logging
 
 STORAGE = Storage()
 LOGGER = setup_logging("newsmonitor.fetcher")
+DEFAULT_CATEGORY = {"id": "other", "name": "Інше", "color": "#888888"}
 
 
 # ── Seen IDs ─────────────────────────────────────────────────────────────────
@@ -224,6 +225,21 @@ def analyze_batch(items: list, api_key: str, categories: list,
     return validated
 
 
+def normalize_categories(categories: list) -> list:
+    valid = []
+    for c in categories or []:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id", "")).strip()
+        name = str(c.get("name", "")).strip()
+        color = str(c.get("color", "#888888")).strip() or "#888888"
+        if cid and name:
+            valid.append({"id": cid, "name": name, "color": color})
+    if not valid:
+        return [dict(DEFAULT_CATEGORY)]
+    return valid
+
+
 # ── RSS ──────────────────────────────────────────────────────────────────────
 
 def fetch_rss(sources: list, depth: int) -> list:
@@ -290,16 +306,24 @@ async def run():
     ai_enabled       = bool(settings.get("ai_enabled", False))
     ai_model         = settings.get("ai_model", DEFAULT_AI_MODEL)
     rss_depth        = max(1, int(settings.get("rss_depth", 10)))
-    api_key          = ""
-    categories       = settings.get("categories", [])
+    api_key          = settings.get("anthropic_api_key", "")
+    categories       = normalize_categories(settings.get("categories", []))
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
     bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
     priorities       = settings.get("importance_priorities", "")
-    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
-    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", "")
+    api_key          = (
+        env_secret("NEWSMONITOR_ANTHROPIC_API_KEY")
+        or env_secret("ANTHROPIC_API_KEY")
+        or api_key
+    )
+    bot_token        = (
+        env_secret("NEWSMONITOR_BOT_TOKEN")
+        or env_secret("BOT_TOKEN")
+        or bot_token
+    )
     source_ai_enabled = {}
     for src in (sources.get("rss", []) + sources.get("telegram", [])):
         source_ai_enabled[src.get("id")] = bool(src.get("ai_enabled", True))

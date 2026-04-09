@@ -36,6 +36,7 @@ from utils import RetryConfig, retry_call, env_secret, setup_logging
 
 STORAGE = Storage()
 LOGGER = setup_logging("newsmonitor.listener")
+DEFAULT_CATEGORY = {"id": "other", "name": "Інше", "color": "#888888"}
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
@@ -186,6 +187,21 @@ def analyze_single(item: dict, api_key: str, categories: list,
     return result
 
 
+def normalize_categories(categories: list) -> list:
+    valid = []
+    for c in categories or []:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id", "")).strip()
+        name = str(c.get("name", "")).strip()
+        color = str(c.get("color", "#888888")).strip() or "#888888"
+        if cid and name:
+            valid.append({"id": cid, "name": name, "color": color})
+    if not valid:
+        return [dict(DEFAULT_CATEGORY)]
+    return valid
+
+
 # ── Запис новини в news_data.json ─────────────────────────────────────────────
 
 _data_lock = threading.Lock()
@@ -237,17 +253,36 @@ async def run_listener():
     api_hash    = ""
     ai_enabled  = bool(settings.get("ai_enabled", False))
     ai_model    = settings.get("ai_model", DEFAULT_AI_MODEL)
-    api_key     = ""
-    categories  = settings.get("categories", [])
+    api_key     = settings.get("anthropic_api_key", "")
+    categories  = normalize_categories(settings.get("categories", []))
     keywords    = settings.get("keywords", [])
     bot_token   = ""
     bot_chat_id = settings.get("bot_chat_id", "")
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
-    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", "")
-    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
-    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", "")
+    api_hash    = (
+        env_secret("NEWSMONITOR_TELEGRAM_API_HASH")
+        or env_secret("TELEGRAM_API_HASH")
+        or api_hash
+    )
+    api_key     = (
+        env_secret("NEWSMONITOR_ANTHROPIC_API_KEY")
+        or env_secret("ANTHROPIC_API_KEY")
+        or api_key
+    )
+    bot_token   = (
+        env_secret("NEWSMONITOR_BOT_TOKEN")
+        or env_secret("BOT_TOKEN")
+        or bot_token
+    )
+    if not api_id:
+        env_api_id = os.getenv("NEWSMONITOR_TELEGRAM_API_ID", "").strip() or os.getenv("TELEGRAM_API_ID", "").strip()
+        if env_api_id:
+            try:
+                api_id = int(env_api_id)
+            except ValueError:
+                pass
 
     while not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
@@ -256,7 +291,18 @@ async def run_listener():
         await asyncio.sleep(15)
         settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
         api_id = int(settings.get("telegram_api_id", 0) or 0)
-        api_hash = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", settings.get("telegram_api_hash", ""))
+        if not api_id:
+            env_api_id = os.getenv("NEWSMONITOR_TELEGRAM_API_ID", "").strip() or os.getenv("TELEGRAM_API_ID", "").strip()
+            if env_api_id:
+                try:
+                    api_id = int(env_api_id)
+                except ValueError:
+                    pass
+        api_hash = (
+            env_secret("NEWSMONITOR_TELEGRAM_API_HASH")
+            or env_secret("TELEGRAM_API_HASH")
+            or settings.get("telegram_api_hash", "")
+        )
 
     tg_channels = [s for s in sources.get("telegram", []) if s.get("enabled", True)]
     while not tg_channels:

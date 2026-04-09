@@ -28,6 +28,12 @@ class _FakeAnthropic:
 
 
 class AIValidationTest(unittest.TestCase):
+    def test_normalize_categories_adds_fallback_when_empty(self):
+        f = fetcher.normalize_categories([])
+        l = listener.normalize_categories([])
+        self.assertEqual(f[0]["id"], "other")
+        self.assertEqual(l[0]["id"], "other")
+
     def test_fetcher_analyze_batch_validates_shape_and_clamps(self):
         categories = [{"id": "war", "name": "War"}]
         fake_json = '[{"index": 1, "category": "unknown", "importance": 99, "is_duplicate": 0}]'
