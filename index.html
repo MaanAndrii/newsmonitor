@@ -298,7 +298,7 @@ body.compact-mode .imp-num { font-size: 11px; }
       <div class="panel-title"><span class="badge b-rss">RSS</span> Веб-сайти <span class="panel-count" id="rss-count"></span></div>
     </div>
     <table class="src-table">
-      <thead><tr><th>Назва</th><th>URL стрічки</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
+      <thead><tr><th>Назва</th><th>URL стрічки</th><th style="width:170px">Останнє повідомлення</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
       <tbody id="rss-tbody"></tbody>
     </table>
     <div class="add-form" id="rss-form">
@@ -312,7 +312,7 @@ body.compact-mode .imp-num { font-size: 11px; }
       <div class="panel-title"><span class="badge b-tg">Telegram</span> Канали <span class="panel-count" id="tg-count"></span></div>
     </div>
     <table class="src-table">
-      <thead><tr><th>Назва</th><th>Посилання</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
+      <thead><tr><th>Назва</th><th>Посилання</th><th style="width:220px">Останнє повідомлення</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
       <tbody id="tg-tbody"></tbody>
     </table>
     <div class="add-form" id="tg-form">
@@ -601,6 +601,7 @@ let lastNewsUpdatedAt = null;
 let hasBotToken    = false;
 let isAdmin        = false;
 let viewMode       = 'reader';
+let listenerDiagBySource = {};
 const kwUrgentMap  = {};
 let settingsCache  = {};
 
@@ -1107,6 +1108,10 @@ async function loadSources() {
   if (!isAdmin) { toast('Потрібні права адміністратора', true); return; }
   try {
     const data = await api('/api/sources');
+    let diag = {sources:[]};
+    try { diag = await api('/api/listener/diagnostics'); } catch {}
+    listenerDiagBySource = {};
+    (diag.sources || []).forEach(s => { listenerDiagBySource[s.id] = s; });
     renderSrcTable('rss',      data.rss      || []);
     renderSrcTable('telegram', data.telegram || []);
   } catch { toast('Не вдалося завантажити джерела', true); }
@@ -1119,14 +1124,29 @@ function renderSrcTable(type, list) {
   countEl.textContent = `${sorted.filter(s=>s.enabled).length} з ${sorted.length} активних`;
   tbody.innerHTML='';
   if (!sorted.length) {
-    tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">Немає джерел. Додайте нижче.</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="5" style="text-align:center;color:#aaa;padding:20px">Немає джерел. Додайте нижче.</td></tr>`;
     return;
   }
   sorted.forEach(s => {
+    const diag = listenerDiagBySource[s.id] || {};
+    const last = diag.last_message || null;
+    let lastHtml = '<span style="color:#bbb">—</span>';
+    if (type === 'telegram') {
+      if (last && last.time) {
+        lastHtml = `<div style="font-size:12px;color:#1a1a1a">${esc(fmtTime(last.time))}</div>` +
+                   `<div class="row-sub" style="max-width:240px">${esc((last.title||'').slice(0,80))}</div>`;
+      } else if (diag.bound === false) {
+        const err = (diag.binding && diag.binding.error) ? ` (${esc(diag.binding.error)})` : '';
+        lastHtml = `<div style="font-size:12px;color:#c62828">Не підв'язано${err}</div>`;
+      } else {
+        lastHtml = '<span style="font-size:12px;color:#999">Ще не було</span>';
+      }
+    }
     const tr=document.createElement('tr');
     tr.innerHTML=`
       <td><div class="row-name">${esc(s.name)}</div></td>
       <td><div class="row-sub">${esc(s.url)}</div></td>
+      <td>${lastHtml}</td>
       <td><button class="toggle ${s.enabled?'on':'off'}"></button></td>
       <td><div style="display:flex;align-items:center;gap:6px;white-space:nowrap"><button class="edit-btn">✎</button><button class="del-btn">✕</button></div></td>`;
     tr.querySelector('.toggle').addEventListener('click', function() { toggleSrc(type,s.id,this); });

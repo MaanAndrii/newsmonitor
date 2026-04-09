@@ -78,14 +78,34 @@ def save_seen_ids(ids: set) -> None:
     STORAGE.save_seen_ids(ids)
     _write_json(SEEN_FILE, list(ids)[-10000:])
 
-def write_status(status: str, error: str = "") -> None:
+def write_status(status: str, error: str = "", extra: dict | None = None) -> None:
     """Записує статус слухача — server.py читає кожні 5 сек."""
-    _write_json(LISTENER_FILE, {
+    payload = {
         "status":     status,
         "updated_at": time.time(),
         "error":      error,
         "pid":        os.getpid(),
-    })
+    }
+    if extra:
+        payload.update(extra)
+    _write_json(LISTENER_FILE, payload)
+
+def _normalize_channel_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
 
 def _normalize_channel_username(url_or_name: str) -> str:
     raw = (url_or_name or "").strip()
@@ -221,13 +241,22 @@ def append_item(item: dict, keep_days: int, max_items: int) -> None:
 # ── Головний слухач ───────────────────────────────────────────────────────────
 
 async def run_listener():
-    write_status("starting")
+    diagnostics = {
+        "bound_channels": [],
+        "unbound_channels": [],
+        "last_message_by_source": {},
+    }
+
+    def publish_status(status: str, error: str = ""):
+        write_status(status, error, {"diagnostics": diagnostics})
+
+    publish_status("starting")
 
     # Перевіряємо наявність сесії
     if not os.path.exists(SESSION_FILE + ".session"):
         msg = "Сесія відсутня. Авторизуйтесь через Налаштування → Авторизація Telegram"
         print(f"[LISTENER] {msg}")
-        write_status("error", msg)
+        publish_status("error", msg)
         return
 
     settings    = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
@@ -252,14 +281,14 @@ async def run_listener():
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
         print(f"[LISTENER] {msg}")
-        write_status("error", msg)
+        publish_status("error", msg)
         return
 
     tg_channels = [s for s in sources.get("telegram", []) if s.get("enabled", True)]
     if not tg_channels:
         msg = "Немає активних Telegram каналів."
         print(f"[LISTENER] {msg}")
-        write_status("stopped", msg)
+        publish_status("stopped", msg)
         return
 
     channel_map = {}
@@ -281,6 +310,8 @@ async def run_listener():
         """Резолвить канали в peer-id та намагається доєднатись до публічних."""
         channel_peer_map.clear()
         unavailable = []
+        bound = []
+        unbound = []
         for username, ch in channel_map.items():
             try:
                 try:
@@ -290,9 +321,25 @@ async def run_listener():
                 except Exception:
                     pass
                 entity = await client.get_entity(username)
-                channel_peer_map[str(get_peer_id(entity))] = ch
+                peer_id = str(get_peer_id(entity))
+                channel_peer_map[peer_id] = ch
+                bound.append({
+                    "source_id": ch.get("id", username),
+                    "name": ch.get("name", username),
+                    "username": username,
+                    "peer_id": peer_id,
+                })
             except Exception as e:
-                unavailable.append(f"@{username}: {e}")
+                err = str(e)
+                unavailable.append(f"@{username}: {err}")
+                unbound.append({
+                    "source_id": ch.get("id", username),
+                    "name": ch.get("name", username),
+                    "username": username,
+                    "error": err,
+                })
+        diagnostics["bound_channels"] = bound
+        diagnostics["unbound_channels"] = unbound
         return unavailable
 
     @client.on(events.NewMessage)
@@ -332,6 +379,12 @@ async def run_listener():
             "importance":       5,
             "is_duplicate":     False,
             "matched_keywords": [],
+        }
+        diagnostics["last_message_by_source"][src_id] = {
+            "time": item["time"],
+            "title": item["title"],
+            "message_id": msg.id,
+            "username": username,
         }
 
         print(f"  [+] {src_name}: {item['title'][:70]}...")
@@ -391,7 +444,7 @@ async def run_listener():
             if not await client.is_user_authorized():
                 msg = "Сесія недійсна. Авторизуйтесь через інтерфейс."
                 print(f"[LISTENER] {msg}")
-                write_status("error", msg)
+                publish_status("error", msg)
                 break
 
             unavailable = await refresh_channel_bindings()
@@ -401,7 +454,7 @@ async def run_listener():
                     short += f"; ... (+{len(unavailable)-3})"
                 print(f"[LISTENER] Недоступні канали: {short}")
 
-            write_status("running")
+            publish_status("running")
             print(f"[LISTENER] Запущено. Слухаємо {len(channel_map)} каналів\n")
             retry_delay = 5
 
@@ -410,7 +463,7 @@ async def run_listener():
             async def heartbeat():
                 while True:
                     await asyncio.sleep(10)
-                    write_status("running")
+                    publish_status("running")
 
             hb_task = asyncio.ensure_future(heartbeat())
             try:
@@ -420,27 +473,27 @@ async def run_listener():
 
         except FloodWaitError as e:
             print(f"[LISTENER] FloodWait {e.seconds}с...")
-            write_status("reconnecting", f"FloodWait {e.seconds}s")
+            publish_status("reconnecting", f"FloodWait {e.seconds}s")
             await asyncio.sleep(e.seconds)
 
         except (ConnectionError, OSError) as e:
             print(f"[LISTENER] З'єднання: {e} | retry {retry_delay}с")
-            write_status("reconnecting", str(e))
+            publish_status("reconnecting", str(e))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 300)
 
         except asyncio.CancelledError:
             print("\n[LISTENER] Зупинено")
-            write_status("stopped")
+            publish_status("stopped")
             break
 
         except Exception as e:
             print(f"[LISTENER] Помилка: {e} | retry {retry_delay}с")
-            write_status("error", str(e))
+            publish_status("error", str(e))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 300)
         else:
-            write_status("reconnecting", "відключено")
+            publish_status("reconnecting", "відключено")
             await asyncio.sleep(5)
 
     try:
@@ -473,7 +526,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_listener())
     except KeyboardInterrupt:
-        write_status("stopped")
+        write_status("stopped", extra={"diagnostics": {}})
     finally:
         try:
             os.remove(LOCK_FILE)

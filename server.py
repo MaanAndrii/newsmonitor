@@ -258,6 +258,88 @@ def get_listener_status() -> dict:
     except Exception:
         return {"status": "error", "updated_at": None, "error": "Cannot read status"}
 
+def _normalize_tg_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
+
+def get_listener_diagnostics() -> dict:
+    status = get_listener_status()
+    diag = status.get("diagnostics") if isinstance(status, dict) else {}
+    if not isinstance(diag, dict):
+        diag = {}
+    bound = diag.get("bound_channels", [])
+    unbound = diag.get("unbound_channels", [])
+    last_by_source = diag.get("last_message_by_source", {})
+    if not isinstance(bound, list):
+        bound = []
+    if not isinstance(unbound, list):
+        unbound = []
+    if not isinstance(last_by_source, dict):
+        last_by_source = {}
+
+    bound_by_source = {str(x.get("source_id")): x for x in bound if isinstance(x, dict)}
+    unbound_by_source = {str(x.get("source_id")): x for x in unbound if isinstance(x, dict)}
+
+    sources = load_json(SOURCES_FILE, DEFAULT_SOURCES).get("telegram", [])
+    items = []
+    for src in sources:
+        src_id = str(src.get("id", ""))
+        items.append({
+            "id": src_id,
+            "name": src.get("name", ""),
+            "url": src.get("url", ""),
+            "enabled": bool(src.get("enabled", True)),
+            "username": _normalize_tg_username(str(src.get("url", ""))),
+            "bound": src_id in bound_by_source,
+            "binding": bound_by_source.get(src_id) or unbound_by_source.get(src_id) or {},
+            "last_message": last_by_source.get(src_id),
+        })
+
+    return {
+        "ok": True,
+        "status": status.get("status", "unknown"),
+        "updated_at": status.get("updated_at"),
+        "sources": items,
+        "bound_channels": bound,
+        "unbound_channels": unbound,
+    }
+
+
+def detect_telegram_channel_name(username: str) -> str:
+    """Пробує підтягнути назву Telegram-каналу з публічної сторінки t.me."""
+    if not username:
+        return ""
+    try:
+        url = f"https://t.me/{username}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (NewsMonitor)"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r'<meta\\s+property=\"og:title\"\\s+content=\"([^\"]+)\"', body, re.IGNORECASE)
+        if m:
+            title = html.unescape(m.group(1)).strip()
+            if title and title.lower() != "telegram":
+                return title
+    except Exception:
+        pass
+    return ""
+
 
 def detect_telegram_channel_name(username: str) -> str:
     """Пробує підтягнути назву Telegram-каналу з публічної сторінки t.me."""
@@ -451,6 +533,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/sources",
             "/api/refresh",
             "/api/tg/session",
+            "/api/listener/diagnostics",
         }
         if p in admin_only and not self._require_admin():
             return
@@ -464,6 +547,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/status":          lambda: self.send_json(dict(_fetcher_status)),
             "/api/health":          self._serve_health,
             "/api/listener/status": lambda: self.send_json(get_listener_status()),
+            "/api/listener/diagnostics": lambda: self.send_json(get_listener_diagnostics()),
             "/api/refresh":         self._start_fetcher,
             "/api/tg/session":      self._tg_session_status,
         }
