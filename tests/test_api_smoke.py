@@ -24,6 +24,14 @@ class ApiSmokeTest(unittest.TestCase):
             "STORAGE": server.STORAGE,
             "NEWSMONITOR_AUTH_USER": os.environ.get("NEWSMONITOR_AUTH_USER"),
             "NEWSMONITOR_AUTH_PASS": os.environ.get("NEWSMONITOR_AUTH_PASS"),
+            "NEWSMONITOR_ANTHROPIC_API_KEY": os.environ.get("NEWSMONITOR_ANTHROPIC_API_KEY"),
+            "NEWSMONITOR_TELEGRAM_API_HASH": os.environ.get("NEWSMONITOR_TELEGRAM_API_HASH"),
+            "NEWSMONITOR_BOT_TOKEN": os.environ.get("NEWSMONITOR_BOT_TOKEN"),
+            "NEWSMONITOR_TELEGRAM_API_ID": os.environ.get("NEWSMONITOR_TELEGRAM_API_ID"),
+            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY"),
+            "TELEGRAM_API_HASH": os.environ.get("TELEGRAM_API_HASH"),
+            "BOT_TOKEN": os.environ.get("BOT_TOKEN"),
+            "TELEGRAM_API_ID": os.environ.get("TELEGRAM_API_ID"),
         }
 
         server.SOURCES_FILE = os.path.join(self.base, "sources.json")
@@ -37,6 +45,14 @@ class ApiSmokeTest(unittest.TestCase):
 
         os.environ.pop("NEWSMONITOR_AUTH_USER", None)
         os.environ.pop("NEWSMONITOR_AUTH_PASS", None)
+        os.environ.pop("NEWSMONITOR_ANTHROPIC_API_KEY", None)
+        os.environ.pop("NEWSMONITOR_TELEGRAM_API_HASH", None)
+        os.environ.pop("NEWSMONITOR_BOT_TOKEN", None)
+        os.environ.pop("NEWSMONITOR_TELEGRAM_API_ID", None)
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("TELEGRAM_API_HASH", None)
+        os.environ.pop("BOT_TOKEN", None)
+        os.environ.pop("TELEGRAM_API_ID", None)
 
         self.httpd = server.NewsMonitorHTTPServer(("127.0.0.1", 0), server.Handler)
         self.port = self.httpd.server_address[1]
@@ -62,6 +78,20 @@ class ApiSmokeTest(unittest.TestCase):
             os.environ.pop("NEWSMONITOR_AUTH_PASS", None)
         else:
             os.environ["NEWSMONITOR_AUTH_PASS"] = self.old["NEWSMONITOR_AUTH_PASS"]
+        for k in (
+            "NEWSMONITOR_ANTHROPIC_API_KEY",
+            "NEWSMONITOR_TELEGRAM_API_HASH",
+            "NEWSMONITOR_BOT_TOKEN",
+            "NEWSMONITOR_TELEGRAM_API_ID",
+            "ANTHROPIC_API_KEY",
+            "TELEGRAM_API_HASH",
+            "BOT_TOKEN",
+            "TELEGRAM_API_ID",
+        ):
+            if self.old[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = self.old[k]
 
         self.td.cleanup()
 
@@ -207,6 +237,39 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(body["telegram_api_id"], 777777)
         self.assertTrue(body["has_telegram_hash"])
         self.assertTrue(body["has_anthropic_key"])
+
+    def test_settings_flags_support_legacy_env_names(self):
+        os.environ["ANTHROPIC_API_KEY"] = "legacy_anth"
+        os.environ["TELEGRAM_API_HASH"] = "legacy_tg_hash"
+        os.environ["BOT_TOKEN"] = "legacy_bot"
+        os.environ["TELEGRAM_API_ID"] = "123456"
+
+        code, settings = self._get("/api/settings")
+        self.assertEqual(code, 200)
+        self.assertTrue(settings["has_anthropic_key"])
+        self.assertTrue(settings["has_telegram_hash"])
+        self.assertTrue(settings["has_bot_token"])
+        self.assertEqual(settings["telegram_api_id"], 123456)
+
+    def test_tg_send_code_uses_env_resolved_credentials(self):
+        os.environ["TELEGRAM_API_ID"] = "999999"
+        os.environ["TELEGRAM_API_HASH"] = "legacy_hash"
+        original = server._tg_auth_send_code
+        server._tg_auth_send_code = lambda phone, api_id, api_hash: {  # type: ignore[assignment]
+            "ok": True,
+            "already_authorized": False,
+            "phone": phone,
+            "api_id": api_id,
+            "api_hash": api_hash,
+        }
+        try:
+            code, payload = self._post("/api/tg/send_code", {"phone": "+380501234567"})
+            self.assertEqual(code, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["api_id"], 999999)
+            self.assertEqual(payload["api_hash"], "legacy_hash")
+        finally:
+            server._tg_auth_send_code = original
 
 
 if __name__ == "__main__":

@@ -220,9 +220,31 @@ def save_read_ids(ids: set) -> None:
 
 def resolve_settings_with_env(settings: dict) -> dict:
     merged = dict(settings)
-    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
-    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", "")
-    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", "")
+    merged["anthropic_api_key"] = (
+        env_secret("NEWSMONITOR_ANTHROPIC_API_KEY")
+        or env_secret("ANTHROPIC_API_KEY")
+        or merged.get("anthropic_api_key", "")
+    )
+    merged["telegram_api_hash"] = (
+        env_secret("NEWSMONITOR_TELEGRAM_API_HASH")
+        or env_secret("TELEGRAM_API_HASH")
+        or merged.get("telegram_api_hash", "")
+    )
+    merged["bot_token"] = (
+        env_secret("NEWSMONITOR_BOT_TOKEN")
+        or env_secret("BOT_TOKEN")
+        or merged.get("bot_token", "")
+    )
+    if not int(merged.get("telegram_api_id", 0) or 0):
+        env_api_id = (
+            os.getenv("NEWSMONITOR_TELEGRAM_API_ID", "").strip()
+            or os.getenv("TELEGRAM_API_ID", "").strip()
+        )
+        if env_api_id:
+            try:
+                merged["telegram_api_id"] = int(env_api_id)
+            except ValueError:
+                pass
     return merged
 
 def get_listener_status() -> dict:
@@ -785,7 +807,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _tg_send_code(self, body: dict):
         phone    = str(body.get("phone", "")).strip()
-        s        = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s        = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         api_id   = int(s.get("telegram_api_id",   0) or 0)
         api_hash = s.get("telegram_api_hash", "")
         if not phone:

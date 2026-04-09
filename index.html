@@ -729,6 +729,7 @@ document.querySelectorAll('.stab').forEach(t => t.addEventListener('click', () =
   document.getElementById('stab-' + t.dataset.stab).classList.add('on');
   if (t.dataset.stab === 'sources') loadSources();
   if (t.dataset.stab === 'telegram-auth') checkTgSession();
+  if (t.dataset.stab === 'debug') loadApiDebug();
 }));
 
 document.querySelectorAll('.chip[data-f]').forEach(c => c.addEventListener('click', () => {
@@ -1332,8 +1333,6 @@ async function loadSettings() {
     tgHint.textContent = d.has_telegram_hash ? '✓ Hash доданий і валідний' : 'Не вказано';
     tgHint.className   = 'setting-hint ' + (d.has_telegram_hash ? 'ok' : 'err');
     document.getElementById('bot-token-hint').textContent = d.has_bot_token?'✓ Токен збережено':'Не вказано';
-    await loadApiDebug();
-
     categories = d.categories||[];
     Object.keys(kwUrgentMap).forEach(k=>delete kwUrgentMap[k]);
     (d.keywords||[]).forEach(kw=>{ kwUrgentMap[kw.phrase.toLowerCase()]=kw.urgent; });
