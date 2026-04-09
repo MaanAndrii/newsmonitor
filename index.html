@@ -678,10 +678,37 @@ function updateAdminUI() {
   if (settingsLink) settingsLink.style.display = isAdmin ? '' : 'none';
   document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
   document.getElementById('fetch-btn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('auth-btn').style.display = 'none';
+  const authBtn = document.getElementById('auth-btn');
+  authBtn.style.display = '';
+  authBtn.textContent = isAdmin ? 'Вийти' : 'Увійти';
 }
 async function toggleAuth() {
-  return;
+  try {
+    if (isAdmin) {
+      await api('/api/logout', {method:'POST', body:'{}'});
+      isAdmin = false;
+      updateAdminUI();
+      toast('Вихід виконано');
+      return;
+    }
+    const username = prompt('Логін адміністратора:');
+    if (!username) return;
+    const password = prompt('Пароль адміністратора:');
+    if (password === null) return;
+    const d = await api('/api/login', {
+      method:'POST',
+      body: JSON.stringify({username, password})
+    });
+    if (d.ok) {
+      isAdmin = true;
+      updateAdminUI();
+      toast('Вхід виконано');
+    } else {
+      toast('Невірний логін або пароль', true);
+    }
+  } catch (e) {
+    toast('Помилка авторизації', true);
+  }
 }
 
 // ── Навігація ─────────────────────────────────────────────────────────────────

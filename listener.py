@@ -30,6 +30,7 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from io_utils import load_json, write_json
 from storage import Storage
 from utils import RetryConfig, retry_call, env_secret, setup_logging
 
@@ -38,27 +39,6 @@ LOGGER = setup_logging("newsmonitor.listener")
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
-
-def load_json(path: str, default) -> dict:
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(default, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            return data
-        except (json.JSONDecodeError, OSError) as e:
-            LOGGER.warning("[WARN] %s: %s", path, e)
-    _write_json(path, default)
-    return dict(default) if isinstance(default, dict) else default
-
-def _write_json(path: str, data) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 def load_seen_ids() -> set:
     ids = STORAGE.load_seen_ids()
@@ -76,7 +56,7 @@ def load_seen_ids() -> set:
 
 def save_seen_ids(ids: set) -> None:
     STORAGE.save_seen_ids(ids)
-    _write_json(SEEN_FILE, list(ids)[-10000:])
+    write_json(SEEN_FILE, list(ids)[-10000:])
 
 def write_status(status: str, error: str = "", extra: dict | None = None) -> None:
     """Записує статус слухача — server.py читає кожні 5 сек."""
@@ -88,7 +68,7 @@ def write_status(status: str, error: str = "", extra: dict | None = None) -> Non
     }
     if extra:
         payload.update(extra)
-    _write_json(LISTENER_FILE, payload)
+    write_json(LISTENER_FILE, payload)
 
 def _normalize_channel_username(url_or_name: str) -> str:
     raw = (url_or_name or "").strip()
@@ -191,6 +171,15 @@ def analyze_single(item: dict, api_key: str, categories: list,
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError("AI response must be an object")
+    importance = result.get("importance", 5)
+    try:
+        importance = int(importance)
+    except (TypeError, ValueError):
+        importance = 5
+    result["importance"] = min(10, max(1, importance))
+    result["is_duplicate"] = bool(result.get("is_duplicate", False))
 
     if result.get("category") not in cat_ids:
         result["category"] = cat_ids[0]
@@ -211,12 +200,13 @@ def append_item(item: dict, keep_days: int, max_items: int) -> None:
         result = STORAGE.cleanup(keep_days, max_items)
         prev_new = int(STORAGE.get_kv("new_count", 0) or 0)
         STORAGE.set_kv("new_count", prev_new + 1)
-        _write_json(DATA_FILE, {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "total":      len(result),
-            "new_count":  prev_new + 1,
-            "items":      result,
-        })
+        if os.getenv("NEWSMONITOR_WRITE_LEGACY_JSON", "").strip().lower() in {"1", "true", "yes", "on"}:
+            write_json(DATA_FILE, {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "total":      len(result),
+                "new_count":  prev_new + 1,
+                "items":      result,
+            })
 
 
 # ── Головний слухач ───────────────────────────────────────────────────────────
@@ -236,7 +226,7 @@ async def run_listener():
     # Перевіряємо наявність сесії
     if not os.path.exists(SESSION_FILE + ".session"):
         msg = "Сесія відсутня. Авторизуйтесь через Налаштування → Авторизація Telegram"
-        print(f"[LISTENER] {msg}")
+        LOGGER.error("[LISTENER] %s", msg)
         publish_status("error", msg)
         return
 
@@ -261,14 +251,14 @@ async def run_listener():
 
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
-        print(f"[LISTENER] {msg}")
+        LOGGER.error("[LISTENER] %s", msg)
         publish_status("error", msg)
         return
 
     tg_channels = [s for s in sources.get("telegram", []) if s.get("enabled", True)]
     if not tg_channels:
         msg = "Немає активних Telegram каналів."
-        print(f"[LISTENER] {msg}")
+        LOGGER.warning("[LISTENER] %s", msg)
         publish_status("stopped", msg)
         return
 
@@ -281,9 +271,9 @@ async def run_listener():
     seen_ids = load_seen_ids()
     channel_peer_map: dict[str, dict] = {}
 
-    print(f"[LISTENER] Канали: {', '.join(channel_map.keys())}")
-    print(f"[LISTENER] AI: {'увімк' if ai_enabled else 'вимк'} | "
-          f"Ключових слів: {len(keywords)}")
+    LOGGER.info("[LISTENER] Канали: %s", ", ".join(channel_map.keys()))
+    LOGGER.info("[LISTENER] AI: %s | Ключових слів: %s",
+                "увімк" if ai_enabled else "вимк", len(keywords))
 
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 
@@ -370,7 +360,7 @@ async def run_listener():
             "username": username,
         }
 
-        print(f"  [+] {src_name}: {item['title'][:70]}...")
+        LOGGER.info("[LISTENER] [+] %s: %s...", src_name, item["title"][:70])
 
         # Ключові слова
         if keywords:
@@ -393,7 +383,7 @@ async def run_listener():
                     lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
                 if bot_token and bot_chat_id:
                     send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
-                    print(f"    [BOT] {kw_str}")
+                    LOGGER.info("[LISTENER][BOT] %s", kw_str)
 
         # AI аналіз
         if source_ai_enabled and ai_enabled and api_key and categories:
@@ -405,9 +395,9 @@ async def run_listener():
                         "importance":   int(result.get("importance", 5)),
                         "is_duplicate": bool(result.get("is_duplicate", False)),
                     })
-                print(f"    [AI] {item['category']} | {item['importance']}/10")
+                LOGGER.info("[LISTENER][AI] %s | %s/10", item["category"], item["importance"])
             except Exception as e:
-                print(f"    [AI] Помилка: {e}")
+                LOGGER.warning("[LISTENER][AI] Помилка: %s", e)
 
         # Зберігаємо
         fresh = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
@@ -426,7 +416,7 @@ async def run_listener():
             # Перевіряємо авторизацію без інтерактивного вводу
             if not await client.is_user_authorized():
                 msg = "Сесія недійсна. Авторизуйтесь через інтерфейс."
-                print(f"[LISTENER] {msg}")
+                LOGGER.error("[LISTENER] %s", msg)
                 publish_status("error", msg)
                 break
 
@@ -435,10 +425,10 @@ async def run_listener():
                 short = "; ".join(unavailable[:3])
                 if len(unavailable) > 3:
                     short += f"; ... (+{len(unavailable)-3})"
-                print(f"[LISTENER] Недоступні канали: {short}")
+                LOGGER.warning("[LISTENER] Недоступні канали: %s", short)
 
             publish_status("running")
-            print(f"[LISTENER] Запущено. Слухаємо {len(channel_map)} каналів\n")
+            LOGGER.info("[LISTENER] Запущено. Слухаємо %s каналів", len(channel_map))
             retry_delay = 5
 
             # Фоновий таск — оновлює updated_at кожні 10 сек
@@ -455,23 +445,23 @@ async def run_listener():
                 hb_task.cancel()
 
         except FloodWaitError as e:
-            print(f"[LISTENER] FloodWait {e.seconds}с...")
+            LOGGER.warning("[LISTENER] FloodWait %sс...", e.seconds)
             publish_status("reconnecting", f"FloodWait {e.seconds}s")
             await asyncio.sleep(e.seconds)
 
         except (ConnectionError, OSError) as e:
-            print(f"[LISTENER] З'єднання: {e} | retry {retry_delay}с")
+            LOGGER.warning("[LISTENER] З'єднання: %s | retry %sс", e, retry_delay)
             publish_status("reconnecting", str(e))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 300)
 
         except asyncio.CancelledError:
-            print("\n[LISTENER] Зупинено")
+            LOGGER.info("[LISTENER] Зупинено")
             publish_status("stopped")
             break
 
         except Exception as e:
-            print(f"[LISTENER] Помилка: {e} | retry {retry_delay}с")
+            LOGGER.warning("[LISTENER] Помилка: %s | retry %sс", e, retry_delay)
             publish_status("error", str(e))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 300)
@@ -498,7 +488,7 @@ if __name__ == "__main__":
             with open(LOCK_FILE) as f:
                 pid = int(f.read().strip())
             os.kill(pid, 0)
-            print(f"[LISTENER] Вже запущено (PID {pid}). Виходимо.")
+            LOGGER.info("[LISTENER] Вже запущено (PID %s). Виходимо.", pid)
             exit(0)
         except (ProcessLookupError, ValueError, OSError):
             pass
