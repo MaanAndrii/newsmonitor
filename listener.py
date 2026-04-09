@@ -16,7 +16,13 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    SessionPasswordNeededError,
+    UserAlreadyParticipantError,
+)
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.utils import get_peer_id
 
 from config import (
     SOURCES_FILE, SETTINGS_FILE, DATA_FILE, SESSION_FILE,
@@ -24,6 +30,11 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from storage import Storage
+from utils import RetryConfig, retry_call, setup_logging, env_secret
+
+LOGGER = setup_logging(os.getenv("NEWSMONITOR_LOG_LEVEL", "INFO"))
+STORAGE = Storage()
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
@@ -50,19 +61,22 @@ def _write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 def load_seen_ids() -> set:
+    ids = STORAGE.load_seen_ids()
+    if ids:
+        return ids
     if not os.path.exists(SEEN_FILE):
         return set()
     try:
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            ids = set(json.load(f))
+        STORAGE.save_seen_ids(ids)
+        return ids
     except Exception:
         return set()
 
 def save_seen_ids(ids: set) -> None:
-    lst = list(ids)
-    if len(lst) > 10000:
-        lst = lst[-10000:]
-    _write_json(SEEN_FILE, lst)
+    STORAGE.save_seen_ids(ids)
+    _write_json(SEEN_FILE, list(ids)[-10000:])
 
 def write_status(status: str, error: str = "") -> None:
     """Записує статус слухача — server.py читає кожні 5 сек."""
@@ -72,6 +86,23 @@ def write_status(status: str, error: str = "") -> None:
         "error":      error,
         "pid":        os.getpid(),
     })
+
+def _normalize_channel_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
 
 
 # ── Ключові слова ─────────────────────────────────────────────────────────────
@@ -92,18 +123,26 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
     if not bot_token or not chat_id or not text:
         return False
     try:
-        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id":                  chat_id,
-            "text":                     text,
-            "parse_mode":               "HTML",
-            "disable_web_page_preview": "true",
-        }).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()).get("ok", False)
+        def _send():
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id":                  chat_id,
+                "text":                     text,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": "true",
+            }).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read()).get("ok", False)
+
+        return retry_call(
+            _send,
+            RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.3),
+            LOGGER,
+            "telegram_bot_send",
+        )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.error(f"  [BOT] {e}")
         return False
 
 
@@ -132,16 +171,21 @@ def analyze_single(item: dict, api_key: str, categories: list,
         f"{IMPORTANCE_CRITERIA}\n"
         f"{priorities_block}\n"
         "Поверни:\n"
-        '{"summary":"підсумок 1-2 реченнями українською",'
+        '{'
         f'"category":одне з [{cat_list}],'
         '"importance":1-10,"is_duplicate":false}\n\n'
         "ТІЛЬКИ JSON об'єкт, без пояснень та markdown."
     )
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+    response = retry_call(
+        lambda: client.messages.create(
+            model=model,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        ),
+        RetryConfig(attempts=3, base_delay=1.5, max_delay=8.0, jitter=0.3),
+        LOGGER,
+        "anthropic_single_analyze",
     )
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
@@ -157,50 +201,21 @@ def analyze_single(item: dict, api_key: str, categories: list,
 _data_lock = threading.Lock()
 
 def append_item(item: dict, keep_days: int, max_items: int) -> None:
-    """Атомарно додає одну новину до news_data.json."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-
+    """Атомарно додає одну новину у SQLite + синхронізує legacy JSON."""
     with _data_lock:
-        existing = []
-        meta     = {}
-        if os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                existing = data.get("items", [])
-                meta     = {k: v for k, v in data.items() if k != "items"}
-            except Exception:
-                pass
-
-        # перевіряємо дубль
-        if any(it["id"] == item["id"] for it in existing):
+        existing_ids = {x["id"] for x in STORAGE.load_items()}
+        if item["id"] in existing_ids:
             return
-
-        existing.insert(0, item)
-
-        # очищення
-        result = []
-        for it in existing:
-            try:
-                t = it.get("time", "")
-                if t.endswith("Z"):
-                    t = t[:-1] + "+00:00"
-                elif "+" not in t and len(t) > 10 and t.count("-") <= 2:
-                    t += "+00:00"
-                if datetime.fromisoformat(t) >= cutoff:
-                    result.append(it)
-            except Exception:
-                result.append(it)
-
-        result = result[:max_items]
-
-        meta.update({
+        STORAGE.append_item(item)
+        result = STORAGE.cleanup(keep_days, max_items)
+        prev_new = int(STORAGE.get_kv("new_count", 0) or 0)
+        STORAGE.set_kv("new_count", prev_new + 1)
+        _write_json(DATA_FILE, {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "total":      len(result),
-            "new_count":  meta.get("new_count", 0) + 1,
+            "new_count":  prev_new + 1,
             "items":      result,
         })
-        _write_json(DATA_FILE, meta)
 
 
 # ── Головний слухач ───────────────────────────────────────────────────────────
@@ -230,6 +245,9 @@ async def run_listener():
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
+    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", api_hash)
+    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
+    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
 
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
@@ -246,10 +264,12 @@ async def run_listener():
 
     channel_map = {}
     for ch in tg_channels:
-        username = ch["url"].rstrip("/").split("/")[-1].lstrip("@").lower()
-        channel_map[username] = ch
+        username = _normalize_channel_username(ch.get("url", ""))
+        if username:
+            channel_map[username] = ch
 
     seen_ids = load_seen_ids()
+    channel_peer_map: dict[str, dict] = {}
 
     print(f"[LISTENER] Канали: {', '.join(channel_map.keys())}")
     print(f"[LISTENER] AI: {'увімк' if ai_enabled else 'вимк'} | "
@@ -257,7 +277,25 @@ async def run_listener():
 
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 
-    @client.on(events.NewMessage(chats=list(channel_map.keys())))
+    async def refresh_channel_bindings() -> list[str]:
+        """Резолвить канали в peer-id та намагається доєднатись до публічних."""
+        channel_peer_map.clear()
+        unavailable = []
+        for username, ch in channel_map.items():
+            try:
+                try:
+                    await client(JoinChannelRequest(username))
+                except UserAlreadyParticipantError:
+                    pass
+                except Exception:
+                    pass
+                entity = await client.get_entity(username)
+                channel_peer_map[str(get_peer_id(entity))] = ch
+            except Exception as e:
+                unavailable.append(f"@{username}: {e}")
+        return unavailable
+
+    @client.on(events.NewMessage)
     async def on_new_message(event):
         msg = event.message
         if not msg.text or len(msg.text.strip()) < 10:
@@ -269,7 +307,10 @@ async def run_listener():
         except Exception:
             username = ""
 
-        ch_info  = channel_map.get(username, {})
+        chat_peer = str(getattr(event, "chat_id", "") or "")
+        ch_info  = channel_map.get(username) or channel_peer_map.get(chat_peer, {})
+        if not ch_info:
+            return
         src_name = ch_info.get("name", username)
         src_id   = ch_info.get("id", username)
 
@@ -324,7 +365,6 @@ async def run_listener():
                 result = analyze_single(item, api_key, categories, ai_model, priorities)
                 if result:
                     item.update({
-                        "summary":      result.get("summary", ""),
                         "category":     result.get("category", item["category"]),
                         "importance":   int(result.get("importance", 5)),
                         "is_duplicate": bool(result.get("is_duplicate", False)),
@@ -353,6 +393,13 @@ async def run_listener():
                 print(f"[LISTENER] {msg}")
                 write_status("error", msg)
                 break
+
+            unavailable = await refresh_channel_bindings()
+            if unavailable:
+                short = "; ".join(unavailable[:3])
+                if len(unavailable) > 3:
+                    short += f"; ... (+{len(unavailable)-3})"
+                print(f"[LISTENER] Недоступні канали: {short}")
 
             write_status("running")
             print(f"[LISTENER] Запущено. Слухаємо {len(channel_map)} каналів\n")
