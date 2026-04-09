@@ -547,8 +547,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p in routes:
             routes[p]()
         else:
-            if p in ("/", ""):
-                self.path = "/index.html"
+            if p.startswith("/api/"):
+                self.send_json({"error": "Not found"}, 404)
+                return
+            # SPA fallback: будь-який не-API шлях відкриває дашборд.
+            self.path = "/index.html"
             super().do_GET()
 
     def do_POST(self):
