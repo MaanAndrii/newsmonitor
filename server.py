@@ -451,21 +451,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not self._auth_required():
             return True
-        # session-cookie auth
+        # Тільки session-cookie auth для веб-адмінки.
+        # Не використовуємо browser-level Basic Auth, щоб після logout+F5
+        # сесія не "поверталась" автоматично.
         token = self._get_cookie("nm_admin")
         if token:
             exp = _admin_sessions.get(token)
             if exp and exp > time.time():
                 return True
-        header = self.headers.get("Authorization", "")
-        if not header.startswith("Basic "):
-            return False
-        try:
-            raw = base64.b64decode(header.split(" ", 1)[1]).decode("utf-8")
-            user, pwd = raw.split(":", 1)
-        except Exception:
-            return False
-        return user == AUTH_USER and pwd == AUTH_PASS
+        return False
 
     def _deny_auth(self):
         accept = (self.headers.get("Accept", "") or "").lower()
@@ -477,7 +471,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(
             {"error": "auth_required"},
             401,
-            extra_headers=[("WWW-Authenticate", 'Basic realm="NewsMonitor"')],
         )
 
     def _get_cookie(self, name: str) -> str:
