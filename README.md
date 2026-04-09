@@ -35,7 +35,13 @@ export NEWSMONITOR_TELEGRAM_API_HASH='...'
 export NEWSMONITOR_BOT_TOKEN='...'
 ```
 
-> Якщо секрет заданий в env, він має пріоритет над `settings.json`.
+> Починаючи з поточної версії секрети читаються **лише з env** і не зберігаються у `settings.json`.
+> Для веб-адмінки увімкніть авторизацію:
+>
+> ```bash
+> export NEWSMONITOR_AUTH_USER=admin
+> export NEWSMONITOR_AUTH_PASS='strong-password'
+> ```
 
 ---
 
@@ -103,6 +109,20 @@ journalctl -u newsmonitor-server -f
 python -m unittest discover -s tests
 ```
 
+CI запускає:
+- `ruff check io_utils.py tests`
+- `python -m unittest discover -s tests`
+- `python -m py_compile server.py fetcher.py listener.py io_utils.py storage.py utils.py`
+
+## Legacy JSON snapshot (опційно)
+
+За замовчуванням API працює зі SQLite як єдиним джерелом істини.
+Якщо потрібен legacy `news_data.json` для зовнішніх інтеграцій — увімкніть:
+
+```bash
+export NEWSMONITOR_WRITE_LEGACY_JSON=true
+```
+
 ## Як синхронізувати виправлення: Git → Raspberry Pi
 
 ### 1) На вашому ПК (де розробка)
@@ -130,6 +150,8 @@ curl -u <user>:<pass> http://127.0.0.1:8000/api/health
 
 - Перевірте `/api/status`: якщо `error` не порожній, fetcher падає під час запуску.
 - Сервер запускає `fetcher.py` тим самим Python-інтерпретатором, яким запущений `server.py`, тому важливо стартувати сервіс через `.venv/bin/python3`.
+
+Детальні інструкції з інцидентів — у `RUNBOOK.md`.
 
 ---
 

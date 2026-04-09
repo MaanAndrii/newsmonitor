@@ -20,38 +20,12 @@ from config import (
     SEEN_FILE, DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from io_utils import load_json, write_json
 from storage import Storage
 from utils import RetryConfig, retry_call, env_secret, setup_logging
 
 STORAGE = Storage()
 LOGGER = setup_logging("newsmonitor.fetcher")
-
-
-# ── Утиліти ──────────────────────────────────────────────────────────────────
-
-def load_json(path: str, default) -> dict:
-    """Завантажує JSON файл. При помилці повертає default."""
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # міграція: додаємо відсутні ключі зі збереженням наявних
-            if isinstance(default, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            return data
-        except (json.JSONDecodeError, OSError) as e:
-            LOGGER.warning("[WARN] Не вдалося прочитати %s: %s", path, e)
-    write_json(path, default)
-    return dict(default) if isinstance(default, dict) else default
-
-def write_json(path: str, data) -> None:
-    """Атомарний запис JSON через тимчасовий файл."""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 # ── Seen IDs ─────────────────────────────────────────────────────────────────
@@ -223,12 +197,31 @@ def analyze_batch(items: list, api_key: str, categories: list,
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     results = json.loads(raw)
+    if not isinstance(results, list):
+        raise ValueError("AI response must be a JSON list")
+    validated = []
+    for idx, item in enumerate(results, 1):
+        if not isinstance(item, dict):
+            continue
+        source_index = int(item.get("index", idx))
+        importance = item.get("importance", 5)
+        try:
+            importance = int(importance)
+        except (TypeError, ValueError):
+            importance = 5
+        importance = min(10, max(1, importance))
+        validated.append({
+            "index": source_index,
+            "category": item.get("category"),
+            "importance": importance,
+            "is_duplicate": bool(item.get("is_duplicate", False)),
+        })
 
     # валідуємо category
-    for r in results:
+    for r in validated:
         if r.get("category") not in cat_ids:
             r["category"] = cat_ids[0]
-    return results
+    return validated
 
 
 # ── RSS ──────────────────────────────────────────────────────────────────────
@@ -238,9 +231,9 @@ def fetch_rss(sources: list, depth: int) -> list:
     results = []
     for src in sources:
         if not src.get("enabled", True):
-            print(f"  [RSS] Пропущено: {src['name']} (вимкнено)")
+            LOGGER.info("[RSS] Пропущено: %s (вимкнено)", src["name"])
             continue
-        print(f"  [RSS] {src['name']} ...", end=" ", flush=True)
+        LOGGER.info("[RSS] %s ...", src["name"])
         try:
             feed  = retry_call(
                 lambda: feedparser.parse(src["url"]),
@@ -278,18 +271,18 @@ def fetch_rss(sources: list, depth: int) -> list:
                     "time":      ts,
                 })
                 count += 1
-            print(f"{count} новин")
+            LOGGER.info("[RSS] %s: %s новин", src["name"], count)
         except Exception as e:
-            print(f"помилка: {e}")
+            LOGGER.warning("[RSS] %s: помилка: %s", src.get("name", "unknown"), e)
     return results
 
 
 # ── Головна логіка ────────────────────────────────────────────────────────────
 
 async def run():
-    print("=" * 48)
-    print(f"  News Monitor Fetcher — {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
-    print("=" * 48)
+    LOGGER.info("=" * 48)
+    LOGGER.info("News Monitor Fetcher — %s", datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+    LOGGER.info("=" * 48)
 
     settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
     sources  = load_json(SOURCES_FILE,  DEFAULT_SOURCES)
@@ -297,24 +290,24 @@ async def run():
     ai_enabled       = bool(settings.get("ai_enabled", False))
     ai_model         = settings.get("ai_model", DEFAULT_AI_MODEL)
     rss_depth        = max(1, int(settings.get("rss_depth", 10)))
-    api_key          = settings.get("anthropic_api_key", "")
+    api_key          = ""
     categories       = settings.get("categories", [])
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
-    bot_token        = settings.get("bot_token", "")
+    bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
     priorities       = settings.get("importance_priorities", "")
-    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
-    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
+    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", "")
     source_ai_enabled = {}
     for src in (sources.get("rss", []) + sources.get("telegram", [])):
         source_ai_enabled[src.get("id")] = bool(src.get("ai_enabled", True))
 
-    print(f"  AI: {'увімк' if ai_enabled else 'вимк'} | модель: {ai_model}")
-    print(f"  RSS глибина: {rss_depth}")
-    print(f"  Категорій: {len(categories)} | Ключових слів: {len(keywords)}")
-    print("  Telegram пакетний збір: вимкнено (працює тільки listener)\n")
+    LOGGER.info("AI: %s | модель: %s", "увімк" if ai_enabled else "вимк", ai_model)
+    LOGGER.info("RSS глибина: %s", rss_depth)
+    LOGGER.info("Категорій: %s | Ключових слів: %s", len(categories), len(keywords))
+    LOGGER.info("Telegram пакетний збір: вимкнено (працює тільки listener)")
 
     # ── Завантажуємо попередній стан ─────────────────────────────────────────
     seen_ids     = load_seen_ids()
@@ -328,24 +321,24 @@ async def run():
                 "is_duplicate": it.get("is_duplicate", False),
                 "matched_keywords": it.get("matched_keywords", []),
             }
-        print(f"[0] Відомих новин: {len(seen_ids)} | Збережений аналіз: {len(prev_analysis)}")
+        LOGGER.info("[0] Відомих новин: %s | Збережений аналіз: %s", len(seen_ids), len(prev_analysis))
     except Exception as e:
-        print(f"[0] Попередній аналіз недоступний: {e}")
+        LOGGER.warning("[0] Попередній аналіз недоступний: %s", e)
 
     # ── Збираємо новини ──────────────────────────────────────────────────────
-    print("\n[1/4] Збір новин")
+    LOGGER.info("[1/4] Збір новин")
     rss_items = fetch_rss(sources.get("rss", []), rss_depth)
     all_items = list(rss_items)
-    print(f"\n  Зібрано: {len(rss_items)} RSS")
+    LOGGER.info("Зібрано RSS: %s", len(rss_items))
 
     if not all_items:
-        print("\nНемає новин для збереження.")
+        LOGGER.info("Немає новин для збереження.")
         return
 
     # ── Нові vs відомі ───────────────────────────────────────────────────────
     new_items = [it for it in all_items if it["id"] not in seen_ids]
     old_items = [it for it in all_items if it["id"] in     seen_ids]
-    print(f"  Нових: {len(new_items)} | Відомих: {len(old_items)}")
+    LOGGER.info("Нових: %s | Відомих: %s", len(new_items), len(old_items))
 
     # Відновлюємо збережений аналіз для відомих новин
     for item in old_items:
@@ -363,21 +356,20 @@ async def run():
             if matched:
                 kw_hits += 1
         if kw_hits:
-            print(f"  Ключових слів: знайдено в {kw_hits} новинах")
+            LOGGER.info("Ключових слів знайдено в %s новинах", kw_hits)
     else:
         for item in all_items:
             item.setdefault("matched_keywords", [])
 
     # ── AI аналіз (тільки нові) ──────────────────────────────────────────────
-    print()
     ai_candidates = [it for it in new_items if source_ai_enabled.get(it.get("source_id"), True)]
     if ai_candidates and ai_enabled and api_key and categories:
-        print(f"[2/4] AI аналіз: {len(ai_candidates)} нових новин | {ai_model}")
+        LOGGER.info("[2/4] AI аналіз: %s нових новин | %s", len(ai_candidates), ai_model)
         BATCH = 15
         for i in range(0, len(ai_candidates), BATCH):
             batch = ai_candidates[i : i + BATCH]
             end   = min(i + BATCH, len(ai_candidates))
-            print(f"  [{i+1}–{end}/{len(ai_candidates)}] ...", end=" ", flush=True)
+            LOGGER.info("  [%s–%s/%s] ...", i + 1, end, len(ai_candidates))
             try:
                 analyses = analyze_batch(batch, api_key, categories, ai_model, priorities)
                 for ai_res in analyses:
@@ -388,20 +380,18 @@ async def run():
                             "importance":   int(ai_res.get("importance", 5)),
                             "is_duplicate": bool(ai_res.get("is_duplicate", False)),
                         })
-                print("OK")
+                LOGGER.info("  batch OK")
             except Exception as e:
-                print(f"помилка: {e}")
-        print()
+                LOGGER.warning("  помилка batch AI: %s", e)
     else:
         if not new_items:
-            print("[2/4] AI пропущено — немає нових новин")
+            LOGGER.info("[2/4] AI пропущено — немає нових новин")
         elif not ai_enabled:
-            print("[2/4] AI пропущено — вимкнено в налаштуваннях")
+            LOGGER.info("[2/4] AI пропущено — вимкнено в налаштуваннях")
         elif not api_key:
-            print("[2/4] AI пропущено — не вказано Anthropic API ключ")
+            LOGGER.info("[2/4] AI пропущено — не вказано Anthropic API ключ")
         elif not categories:
-            print("[2/4] AI пропущено — не налаштовано категорії")
-        print()
+            LOGGER.info("[2/4] AI пропущено — не налаштовано категорії")
 
     # Дефолтні значення для нових без аналізу
     default_cat = categories[0]["id"] if categories else ""
@@ -422,26 +412,25 @@ async def run():
     if bot_token and bot_chat_id and keywords and new_items:
         kw_new = [it for it in new_items if it.get("matched_keywords")]
         if kw_new:
-            print("[BOT] Надсилаємо сповіщення...")
+            LOGGER.info("[BOT] Надсилаємо сповіщення...")
             sent = notify_keywords(kw_new, keywords, bot_token, bot_chat_id)
-            print(f"  Надіслано: {sent}")
-            print()
+            LOGGER.info("[BOT] Надіслано: %s", sent)
 
     # ── Seen IDs ─────────────────────────────────────────────────────────────
     save_seen_ids(seen_ids | {it["id"] for it in all_items})
 
     # ── Об'єднання з новинами від слухача ────────────────────────────────────
-    print("[3/4] Збереження")
+    LOGGER.info("[3/4] Збереження")
     try:
         existing = {"items": STORAGE.load_items()}
         fetcher_ids   = {it["id"] for it in all_items}
         listener_only = [it for it in existing.get("items", [])
                          if it["id"] not in fetcher_ids]
         if listener_only:
-            print(f"  Додаємо {len(listener_only)} новин від слухача")
+            LOGGER.info("Додаємо %s новин від слухача", len(listener_only))
             all_items = all_items + listener_only
     except Exception as e:
-        print(f"  [WARN] Об'єднання з слухачем: {e}")
+        LOGGER.warning("Об'єднання з слухачем: %s", e)
 
     all_items.sort(key=lambda x: x.get("time", ""), reverse=True)
     all_items = cleanup_old_items(all_items, keep_days, max_items)
@@ -460,10 +449,11 @@ async def run():
         "new_count":  len(new_items),
         "items":      all_items,
     }
-    write_json(DATA_FILE, payload)
+    if os.getenv("NEWSMONITOR_WRITE_LEGACY_JSON", "").strip().lower() in {"1", "true", "yes", "on"}:
+        write_json(DATA_FILE, payload)
 
-    print(f"\n  Готово: {len(all_items)} новин | нових: {len(new_items)} | "
-          f"важливих: {high} | дублів: {dups} | ключових слів: {kw_hits}")
+    LOGGER.info("Готово: %s новин | нових: %s | важливих: %s | дублів: %s | ключових слів: %s",
+                len(all_items), len(new_items), high, dups, kw_hits)
 
 
 if __name__ == "__main__":
