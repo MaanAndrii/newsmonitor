@@ -875,7 +875,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # секрети — env має пріоритет, але дозволяємо зберігати в settings.json
         for k in ("anthropic_api_key", "telegram_api_hash", "bot_token"):
-            settings.pop(k, None)
+            if k in body:
+                settings[k] = str(body.get(k, "")).strip()
 
         # категорії
         if "categories" in body and isinstance(body["categories"], list):
