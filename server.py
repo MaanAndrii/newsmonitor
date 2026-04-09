@@ -391,6 +391,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("WWW-Authenticate", 'Basic realm="newsmonitor"')
         self.end_headers()
 
+    def _require_admin(self) -> bool:
+        if not self._auth_required():
+            return True
+        if self._authorized():
+            return True
+        self._deny_auth()
+        return False
+
 
     def _read_body(self) -> dict:
         try:
@@ -413,10 +421,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._deny_auth()
             return
         p = urlparse(self.path).path
+        admin_only = {
+            "/api/settings",
+            "/api/sources",
+            "/api/refresh",
+            "/api/tg/session",
+        }
+        if p in admin_only and not self._require_admin():
+            return
         routes = {
             "/api/news":            self._serve_news,
             "/api/sources":         lambda: self.send_json(load_json(SOURCES_FILE, DEFAULT_SOURCES)),
             "/api/settings":        self._serve_settings,
+            "/api/dashboard/config": self._serve_dashboard_config,
+            "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
             "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
             "/api/status":          lambda: self.send_json(dict(_fetcher_status)),
             "/api/health":          self._serve_health,
@@ -437,6 +455,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         p    = urlparse(self.path).path
         body = self._read_body()
+        admin_only = {
+            "/api/sources",
+            "/api/sources/toggle",
+            "/api/sources/rename",
+            "/api/settings",
+            "/api/news/read",
+            "/api/news/unread",
+            "/api/news/clear_read",
+            "/api/news/send",
+            "/api/tg/send_code",
+            "/api/tg/sign_in",
+            "/api/tg/logout",
+        }
+        if p in admin_only and not self._require_admin():
+            return
         routes = {
             "/api/sources":          lambda: self._add_source(body),
             "/api/sources/toggle":   lambda: self._toggle_source(body),
@@ -460,6 +493,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._deny_auth()
             return
         p    = urlparse(self.path).path
+        if p == "/api/sources" and not self._require_admin():
+            return
         body = self._read_body()
         if p == "/api/sources":
             self._delete_source(body)
@@ -495,6 +530,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         safe["has_bot_token"]     = bool(s.get("bot_token"))
         safe["auth_enabled"]      = self._auth_required()
         self.send_json(safe)
+
+    def _serve_dashboard_config(self):
+        s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
+        self.send_json({
+            "categories": s.get("categories", []),
+            "keywords":   s.get("keywords", []),
+        })
 
     def _serve_health(self):
         self.send_json({
