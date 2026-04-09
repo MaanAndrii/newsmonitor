@@ -146,7 +146,7 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
             "telegram_bot_send",
         )
     except Exception as e:
-        print(f"  [BOT] Помилка відправки: {e}")
+        LOGGER.error(f"  [BOT] Помилка відправки: {e}")
         return False
 
 def notify_keywords(new_items: list, keywords: list,

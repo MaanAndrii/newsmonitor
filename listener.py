@@ -143,7 +143,7 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
             "telegram_bot_send",
         )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.error(f"  [BOT] {e}")
         return False
 
 

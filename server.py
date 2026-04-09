@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import hashlib
+import base64
 import asyncio
 import subprocess
 import sys
@@ -188,7 +189,7 @@ def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
             "telegram_bot_send",
         )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.error(f"  [BOT] {e}")
         return False
 
 
@@ -511,7 +512,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p = urlparse(self.path).path
+        admin_only = {
+            "/api/settings",
+            "/api/sources",
+            "/api/refresh",
+            "/api/tg/session",
+            "/api/listener/diagnostics",
+        }
+        if p in admin_only and not self._require_admin():
+            return
         routes = {
             "/api/news":            self._serve_news,
             "/api/sources":         lambda: self.send_json(load_sources_with_defaults()),
@@ -537,6 +550,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         body = self._read_body()
         admin_only = {
@@ -577,6 +593,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
 
     def do_DELETE(self):
+        if not self._authorized():
+            self._deny_auth()
+            return
         p    = urlparse(self.path).path
         if p == "/api/sources" and not self._require_admin():
             return
