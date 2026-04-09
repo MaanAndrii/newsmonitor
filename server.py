@@ -15,6 +15,7 @@ import re
 import html
 import threading
 import time
+import secrets
 import urllib.request
 import urllib.parse
 from urllib.parse import urlparse
@@ -55,6 +56,8 @@ _tg_auth: dict = {
     "loop":     None,
 }
 _tg_auth_lock = threading.Lock()
+_admin_sessions: dict[str, float] = {}
+SESSION_TTL_SECONDS = 60 * 60 * 12
 
 
 # ── Fetcher ───────────────────────────────────────────────────────────────────
@@ -376,6 +379,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not self._auth_required():
             return True
+        # session-cookie auth
+        token = self._get_cookie("nm_admin")
+        if token:
+            exp = _admin_sessions.get(token)
+            if exp and exp > time.time():
+                return True
         header = self.headers.get("Authorization", "")
         if not header.startswith("Basic "):
             return False
@@ -387,9 +396,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return user == AUTH_USER and pwd == AUTH_PASS
 
     def _deny_auth(self):
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="newsmonitor"')
-        self.end_headers()
+        self.send_json({"error": "auth_required"}, 401)
+
+    def _get_cookie(self, name: str) -> str:
+        raw = self.headers.get("Cookie", "")
+        for part in raw.split(";"):
+            p = part.strip()
+            if p.startswith(name + "="):
+                return p.split("=", 1)[1]
+        return ""
+
+    def _create_admin_session(self) -> str:
+        token = secrets.token_urlsafe(24)
+        _admin_sessions[token] = time.time() + SESSION_TTL_SECONDS
+        return token
+
+    def _clear_admin_session(self):
+        token = self._get_cookie("nm_admin")
+        if token and token in _admin_sessions:
+            _admin_sessions.pop(token, None)
 
     def _require_admin(self) -> bool:
         if not self._auth_required():
@@ -482,6 +507,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code":     lambda: self._tg_send_code(body),
             "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
             "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
+            "/api/login":            lambda: self._login(body),
+            "/api/logout":           self._logout,
         }
         if p in routes:
             routes[p]()
@@ -537,6 +564,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "categories": s.get("categories", []),
             "keywords":   s.get("keywords", []),
         })
+
+    def _login(self, body: dict):
+        if not self._auth_required():
+            self.send_json({"ok": True, "admin": True})
+            return
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", "")).strip()
+        if username == AUTH_USER and password == AUTH_PASS:
+            token = self._create_admin_session()
+            self.send_json(
+                {"ok": True, "admin": True},
+                extra_headers=[("Set-Cookie", f"nm_admin={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}")],
+            )
+            return
+        self.send_json({"ok": False, "error": "Невірний логін або пароль"}, 401)
+
+    def _logout(self):
+        self._clear_admin_session()
+        self.send_json(
+            {"ok": True},
+            extra_headers=[("Set-Cookie", "nm_admin=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")],
+        )
 
     def _serve_health(self):
         self.send_json({
@@ -780,12 +829,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ── Відповіді ─────────────────────────────────────────────────────────────
 
-    def send_json(self, data, code: int = 200):
+    def send_json(self, data, code: int = 200, extra_headers: list[tuple[str, str]] | None = None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", len(body))
         self.send_header("Access-Control-Allow-Origin", "*")
+        if extra_headers:
+            for k, v in extra_headers:
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 

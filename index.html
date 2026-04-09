@@ -223,6 +223,7 @@ a { color: inherit; text-decoration: none; }
     <span class="upd-time" id="upd-time"></span>
     <span class="countdown" id="countdown"></span>
     <span class="listener-badge" id="listener-badge"></span>
+    <button class="btn" id="auth-btn" onclick="toggleAuth()">Увійти</button>
     <button class="btn" id="filters-btn" onclick="toggleFiltersPanel()">Фільтри</button>
     <button class="btn primary" id="fetch-btn" onclick="triggerFetch()">Зібрати новини</button>
   </div>
@@ -626,6 +627,40 @@ function toggleFiltersPanel() {
   const layout = document.querySelector('#page-dashboard .layout');
   if (layout) layout.classList.toggle('filters-hidden');
 }
+function updateAdminUI() {
+  document.getElementById('tab-sources').style.display = isAdmin ? '' : 'none';
+  document.getElementById('tab-settings').style.display = isAdmin ? '' : 'none';
+  document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('fetch-btn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('auth-btn').textContent = isAdmin ? 'Вийти' : 'Увійти';
+}
+async function toggleAuth() {
+  if (isAdmin) {
+    try { await api('/api/logout', {method:'POST', body:'{}'}); } catch {}
+    isAdmin = false;
+    updateAdminUI();
+    toast('Вихід виконано');
+    await loadNews(true);
+    return;
+  }
+  const username = prompt('Логін адміністратора:');
+  if (username === null) return;
+  const password = prompt('Пароль адміністратора:');
+  if (password === null) return;
+  try {
+    const d = await api('/api/login', {method:'POST', body:JSON.stringify({username, password})});
+    if (d.ok) {
+      isAdmin = true;
+      updateAdminUI();
+      toast('Вхід виконано');
+      await loadNews(true);
+    } else {
+      toast(d.error || 'Помилка авторизації', true);
+    }
+  } catch {
+    toast("Помилка з'єднання", true);
+  }
+}
 
 // ── Навігація ─────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
@@ -935,6 +970,7 @@ async function clearRead() {
 }
 
 async function sendNews(id, btn) {
+  if (!isAdmin) { toast('Потрібні права адміністратора', true); return; }
   btn.disabled = true;
   try {
     const d = await api('/api/news/send', {method:'POST', body:JSON.stringify({id})});
@@ -1395,10 +1431,7 @@ async function init() {
     const me = await api('/api/me');
     isAdmin = !!me.admin;
   } catch {}
-  document.getElementById('tab-sources').style.display = isAdmin ? '' : 'none';
-  document.getElementById('tab-settings').style.display = isAdmin ? '' : 'none';
-  document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('fetch-btn').style.display = isAdmin ? '' : 'none';
+  updateAdminUI();
 
   try {
     const v = await api('/api/version');
