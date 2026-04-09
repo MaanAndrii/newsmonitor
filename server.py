@@ -49,10 +49,10 @@ _digest_timer: threading.Timer | None = None
 # ── Стан авторизації Telegram ─────────────────────────────────────────────────
 # Тримаємо TelegramClient між кроками send_code → sign_in
 _tg_auth: dict = {
-    "client":   None,
     "phone":    None,
     "phone_code_hash": None,
-    "loop":     None,
+    "api_id":   None,
+    "api_hash": None,
 }
 _tg_auth_lock = threading.Lock()
 _admin_sessions: dict[str, float] = {}
@@ -354,7 +354,7 @@ def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
     from telethon.sync import TelegramClient as SyncClient
     _ensure_thread_event_loop()
     try:
-        # закриваємо попередній клієнт якщо є
+        # скидаємо попередній auth context
         _cleanup_tg_auth()
 
         client = SyncClient(SESSION_FILE, api_id, api_hash)
@@ -365,10 +365,12 @@ def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
             return {"ok": True, "already_authorized": True}
 
         result = client.send_code_request(phone)
+        client.disconnect()
         with _tg_auth_lock:
-            _tg_auth["client"]          = client
             _tg_auth["phone"]           = phone
             _tg_auth["phone_code_hash"] = result.phone_code_hash
+            _tg_auth["api_id"]          = api_id
+            _tg_auth["api_hash"]        = api_hash
         return {"ok": True, "already_authorized": False}
     except Exception as e:
         _cleanup_tg_auth()
@@ -382,22 +384,27 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
         SessionPasswordNeededError
     )
     with _tg_auth_lock:
-        client          = _tg_auth.get("client")
         phone           = _tg_auth.get("phone")
         phone_code_hash = _tg_auth.get("phone_code_hash")
+        api_id          = _tg_auth.get("api_id")
+        api_hash        = _tg_auth.get("api_hash")
 
     _ensure_thread_event_loop()
 
-    if not client or not phone:
+    if not phone or not api_id or not api_hash:
         return {"ok": False, "error": "Спочатку надішліть код (крок 1)"}
 
+    from telethon.sync import TelegramClient as SyncClient
+    client = SyncClient(SESSION_FILE, int(api_id), str(api_hash))
     try:
+        client.connect()
         client.sign_in(phone, code, phone_code_hash=phone_code_hash)
         client.disconnect()
         _cleanup_tg_auth()
         return {"ok": True}
     except SessionPasswordNeededError:
         if not password:
+            client.disconnect()
             return {"ok": False, "need_password": True}
         try:
             client.sign_in(password=password)
@@ -405,6 +412,10 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
             _cleanup_tg_auth()
             return {"ok": True}
         except Exception as e:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
             return {"ok": False, "error": str(e)}
     except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
         return {"ok": False, "error": "Невірний або прострочений код"}
@@ -414,15 +425,10 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
 
 def _cleanup_tg_auth():
     with _tg_auth_lock:
-        client = _tg_auth.get("client")
-        if client:
-            try:
-                client.disconnect()
-            except Exception:
-                pass
-        _tg_auth["client"]          = None
         _tg_auth["phone"]           = None
         _tg_auth["phone_code_hash"] = None
+        _tg_auth["api_id"]          = None
+        _tg_auth["api_hash"]        = None
 
 
 def _tg_auth_logout() -> dict:
@@ -916,7 +922,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # секрети — env має пріоритет, але дозволяємо зберігати в settings.json
         for k in ("anthropic_api_key", "telegram_api_hash", "bot_token"):
             if k in body:
-                settings[k] = str(body.get(k, "")).strip()
+                val = str(body.get(k, "")).strip()
+                if val:
+                    settings[k] = val
 
         # категорії
         if "categories" in body and isinstance(body["categories"], list):

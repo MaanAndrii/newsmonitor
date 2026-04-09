@@ -133,6 +133,32 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(dbg["stored"]["telegram_api_id"], 123456)
         self.assertTrue(dbg["stored"]["has_telegram_hash"])
 
+    def test_second_save_does_not_wipe_existing_secret_keys(self):
+        first = {
+            "telegram_api_id": 123456,
+            "telegram_api_hash": "hash_saved",
+            "anthropic_api_key": "anth_saved",
+        }
+        code, payload = self._post("/api/settings", first)
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
+
+        second = {
+            "keep_days": 10,
+            "telegram_api_id": 123456,
+            "telegram_api_hash": "",
+            "anthropic_api_key": "",
+            "bot_token": "",
+        }
+        code, payload = self._post("/api/settings", second)
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
+
+        code, settings = self._get("/api/settings")
+        self.assertEqual(code, 200)
+        self.assertTrue(settings["has_telegram_hash"])
+        self.assertTrue(settings["has_anthropic_key"])
+
     def test_public_dashboard_works_without_admin_session(self):
         os.environ["NEWSMONITOR_AUTH_USER"] = "admin"
         os.environ["NEWSMONITOR_AUTH_PASS"] = "secret"
