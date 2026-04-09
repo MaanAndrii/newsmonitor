@@ -468,7 +468,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return user == AUTH_USER and pwd == AUTH_PASS
 
     def _deny_auth(self):
-        self.send_json({"error": "auth_required"}, 401)
+        accept = (self.headers.get("Accept", "") or "").lower()
+        if "text/html" in accept:
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        self.send_json(
+            {"error": "auth_required"},
+            401,
+            extra_headers=[("WWW-Authenticate", 'Basic realm="NewsMonitor"')],
+        )
 
     def _get_cookie(self, name: str) -> str:
         raw = self.headers.get("Cookie", "")
