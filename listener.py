@@ -16,7 +16,13 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    SessionPasswordNeededError,
+    UserAlreadyParticipantError,
+)
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.utils import get_peer_id
 
 from config import (
     SOURCES_FILE, SETTINGS_FILE, DATA_FILE, SESSION_FILE,
@@ -24,6 +30,11 @@ from config import (
     DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from storage import Storage
+from utils import RetryConfig, retry_call, env_secret, setup_logging
+
+STORAGE = Storage()
+LOGGER = setup_logging("newsmonitor.listener")
 
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
@@ -39,7 +50,7 @@ def load_json(path: str, default) -> dict:
                         data[k] = v
             return data
         except (json.JSONDecodeError, OSError) as e:
-            print(f"  [WARN] {path}: {e}")
+            LOGGER.warning("[WARN] %s: %s", path, e)
     _write_json(path, default)
     return dict(default) if isinstance(default, dict) else default
 
@@ -50,28 +61,51 @@ def _write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 def load_seen_ids() -> set:
+    ids = STORAGE.load_seen_ids()
+    if ids:
+        return ids
     if not os.path.exists(SEEN_FILE):
         return set()
     try:
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            ids = set(json.load(f))
+        STORAGE.save_seen_ids(ids)
+        return ids
     except Exception:
         return set()
 
 def save_seen_ids(ids: set) -> None:
-    lst = list(ids)
-    if len(lst) > 10000:
-        lst = lst[-10000:]
-    _write_json(SEEN_FILE, lst)
+    STORAGE.save_seen_ids(ids)
+    _write_json(SEEN_FILE, list(ids)[-10000:])
 
-def write_status(status: str, error: str = "") -> None:
+def write_status(status: str, error: str = "", extra: dict | None = None) -> None:
     """Записує статус слухача — server.py читає кожні 5 сек."""
-    _write_json(LISTENER_FILE, {
+    payload = {
         "status":     status,
         "updated_at": time.time(),
         "error":      error,
         "pid":        os.getpid(),
-    })
+    }
+    if extra:
+        payload.update(extra)
+    _write_json(LISTENER_FILE, payload)
+
+def _normalize_channel_username(url_or_name: str) -> str:
+    raw = (url_or_name or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw[1:].lower()
+    if raw.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        if host.endswith("t.me") or host.endswith("telegram.me"):
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] == "s":
+                parts = parts[1:]
+            if parts:
+                return parts[0].lstrip("@").lower()
+    return raw.rstrip("/").split("/")[-1].lstrip("@").lower()
 
 
 # ── Ключові слова ─────────────────────────────────────────────────────────────
@@ -92,18 +126,25 @@ def send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
     if not bot_token or not chat_id or not text:
         return False
     try:
-        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id":                  chat_id,
-            "text":                     text,
-            "parse_mode":               "HTML",
-            "disable_web_page_preview": "true",
-        }).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()).get("ok", False)
+        def _send():
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id":                  chat_id,
+                "text":                     text,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": "true",
+            }).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read()).get("ok", False)
+
+        return retry_call(
+            _send,
+            RetryConfig(attempts=4, base_delay=1.0, max_delay=6.0, jitter=0.3),
+            "telegram_bot_send",
+        )
     except Exception as e:
-        print(f"  [BOT] {e}")
+        LOGGER.exception("[BOT] Помилка відправки")
         return False
 
 
@@ -132,16 +173,20 @@ def analyze_single(item: dict, api_key: str, categories: list,
         f"{IMPORTANCE_CRITERIA}\n"
         f"{priorities_block}\n"
         "Поверни:\n"
-        '{"summary":"підсумок 1-2 реченнями українською",'
+        '{'
         f'"category":одне з [{cat_list}],'
         '"importance":1-10,"is_duplicate":false}\n\n'
         "ТІЛЬКИ JSON об'єкт, без пояснень та markdown."
     )
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+    response = retry_call(
+        lambda: client.messages.create(
+            model=model,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        ),
+        RetryConfig(attempts=3, base_delay=1.5, max_delay=8.0, jitter=0.3),
+        "anthropic_single_analyze",
     )
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
@@ -157,62 +202,42 @@ def analyze_single(item: dict, api_key: str, categories: list,
 _data_lock = threading.Lock()
 
 def append_item(item: dict, keep_days: int, max_items: int) -> None:
-    """Атомарно додає одну новину до news_data.json."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-
+    """Атомарно додає одну новину у SQLite + синхронізує legacy JSON."""
     with _data_lock:
-        existing = []
-        meta     = {}
-        if os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                existing = data.get("items", [])
-                meta     = {k: v for k, v in data.items() if k != "items"}
-            except Exception:
-                pass
-
-        # перевіряємо дубль
-        if any(it["id"] == item["id"] for it in existing):
+        existing_ids = {x["id"] for x in STORAGE.load_items()}
+        if item["id"] in existing_ids:
             return
-
-        existing.insert(0, item)
-
-        # очищення
-        result = []
-        for it in existing:
-            try:
-                t = it.get("time", "")
-                if t.endswith("Z"):
-                    t = t[:-1] + "+00:00"
-                elif "+" not in t and len(t) > 10 and t.count("-") <= 2:
-                    t += "+00:00"
-                if datetime.fromisoformat(t) >= cutoff:
-                    result.append(it)
-            except Exception:
-                result.append(it)
-
-        result = result[:max_items]
-
-        meta.update({
+        STORAGE.append_item(item)
+        result = STORAGE.cleanup(keep_days, max_items)
+        prev_new = int(STORAGE.get_kv("new_count", 0) or 0)
+        STORAGE.set_kv("new_count", prev_new + 1)
+        _write_json(DATA_FILE, {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "total":      len(result),
-            "new_count":  meta.get("new_count", 0) + 1,
+            "new_count":  prev_new + 1,
             "items":      result,
         })
-        _write_json(DATA_FILE, meta)
 
 
 # ── Головний слухач ───────────────────────────────────────────────────────────
 
 async def run_listener():
-    write_status("starting")
+    diagnostics = {
+        "bound_channels": [],
+        "unbound_channels": [],
+        "last_message_by_source": {},
+    }
+
+    def publish_status(status: str, error: str = ""):
+        write_status(status, error, {"diagnostics": diagnostics})
+
+    publish_status("starting")
 
     # Перевіряємо наявність сесії
     if not os.path.exists(SESSION_FILE + ".session"):
         msg = "Сесія відсутня. Авторизуйтесь через Налаштування → Авторизація Telegram"
         print(f"[LISTENER] {msg}")
-        write_status("error", msg)
+        publish_status("error", msg)
         return
 
     settings    = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
@@ -230,26 +255,31 @@ async def run_listener():
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
+    api_hash    = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", api_hash)
+    api_key     = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
+    bot_token   = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
 
     if not api_id or not api_hash:
         msg = "Не вказано Telegram API ID / Hash. Налаштуйте в інтерфейсі."
         print(f"[LISTENER] {msg}")
-        write_status("error", msg)
+        publish_status("error", msg)
         return
 
     tg_channels = [s for s in sources.get("telegram", []) if s.get("enabled", True)]
     if not tg_channels:
         msg = "Немає активних Telegram каналів."
         print(f"[LISTENER] {msg}")
-        write_status("stopped", msg)
+        publish_status("stopped", msg)
         return
 
     channel_map = {}
     for ch in tg_channels:
-        username = ch["url"].rstrip("/").split("/")[-1].lstrip("@").lower()
-        channel_map[username] = ch
+        username = _normalize_channel_username(ch.get("url", ""))
+        if username:
+            channel_map[username] = ch
 
     seen_ids = load_seen_ids()
+    channel_peer_map: dict[str, dict] = {}
 
     print(f"[LISTENER] Канали: {', '.join(channel_map.keys())}")
     print(f"[LISTENER] AI: {'увімк' if ai_enabled else 'вимк'} | "
@@ -257,7 +287,43 @@ async def run_listener():
 
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 
-    @client.on(events.NewMessage(chats=list(channel_map.keys())))
+    async def refresh_channel_bindings() -> list[str]:
+        """Резолвить канали в peer-id та намагається доєднатись до публічних."""
+        channel_peer_map.clear()
+        unavailable = []
+        bound = []
+        unbound = []
+        for username, ch in channel_map.items():
+            try:
+                try:
+                    await client(JoinChannelRequest(username))
+                except UserAlreadyParticipantError:
+                    pass
+                except Exception:
+                    pass
+                entity = await client.get_entity(username)
+                peer_id = str(get_peer_id(entity))
+                channel_peer_map[peer_id] = ch
+                bound.append({
+                    "source_id": ch.get("id", username),
+                    "name": ch.get("name", username),
+                    "username": username,
+                    "peer_id": peer_id,
+                })
+            except Exception as e:
+                err = str(e)
+                unavailable.append(f"@{username}: {err}")
+                unbound.append({
+                    "source_id": ch.get("id", username),
+                    "name": ch.get("name", username),
+                    "username": username,
+                    "error": err,
+                })
+        diagnostics["bound_channels"] = bound
+        diagnostics["unbound_channels"] = unbound
+        return unavailable
+
+    @client.on(events.NewMessage)
     async def on_new_message(event):
         msg = event.message
         if not msg.text or len(msg.text.strip()) < 10:
@@ -269,11 +335,16 @@ async def run_listener():
         except Exception:
             username = ""
 
-        ch_info  = channel_map.get(username, {})
+        chat_peer = str(getattr(event, "chat_id", "") or "")
+        ch_info  = channel_map.get(username) or channel_peer_map.get(chat_peer, {})
+        if not ch_info:
+            return
         src_name = ch_info.get("name", username)
         src_id   = ch_info.get("id", username)
+        source_ai_enabled = bool(ch_info.get("ai_enabled", True))
 
-        item_id = hashlib.md5(f"{username}_{msg.id}".encode()).hexdigest()[:12]
+        channel_key = username or src_id
+        item_id = hashlib.md5(f"{channel_key}_{msg.id}".encode()).hexdigest()[:12]
         if item_id in seen_ids:
             return
 
@@ -284,13 +355,19 @@ async def run_listener():
             "type":             "telegram",
             "title":            msg.text[:120].replace("\n", " ").strip(),
             "text":             msg.text[:600].strip(),
-            "url":              f"https://t.me/{username}/{msg.id}",
+            "url":              f"https://t.me/{channel_key}/{msg.id}",
             "time":             datetime.now(timezone.utc).isoformat(),
             "summary":          "",
             "category":         categories[0]["id"] if categories else "",
             "importance":       5,
             "is_duplicate":     False,
             "matched_keywords": [],
+        }
+        diagnostics["last_message_by_source"][src_id] = {
+            "time": item["time"],
+            "title": item["title"],
+            "message_id": msg.id,
+            "username": username,
         }
 
         print(f"  [+] {src_name}: {item['title'][:70]}...")
@@ -319,12 +396,11 @@ async def run_listener():
                     print(f"    [BOT] {kw_str}")
 
         # AI аналіз
-        if ai_enabled and api_key and categories:
+        if source_ai_enabled and ai_enabled and api_key and categories:
             try:
                 result = analyze_single(item, api_key, categories, ai_model, priorities)
                 if result:
                     item.update({
-                        "summary":      result.get("summary", ""),
                         "category":     result.get("category", item["category"]),
                         "importance":   int(result.get("importance", 5)),
                         "is_duplicate": bool(result.get("is_duplicate", False)),
@@ -351,10 +427,17 @@ async def run_listener():
             if not await client.is_user_authorized():
                 msg = "Сесія недійсна. Авторизуйтесь через інтерфейс."
                 print(f"[LISTENER] {msg}")
-                write_status("error", msg)
+                publish_status("error", msg)
                 break
 
-            write_status("running")
+            unavailable = await refresh_channel_bindings()
+            if unavailable:
+                short = "; ".join(unavailable[:3])
+                if len(unavailable) > 3:
+                    short += f"; ... (+{len(unavailable)-3})"
+                print(f"[LISTENER] Недоступні канали: {short}")
+
+            publish_status("running")
             print(f"[LISTENER] Запущено. Слухаємо {len(channel_map)} каналів\n")
             retry_delay = 5
 
@@ -363,7 +446,7 @@ async def run_listener():
             async def heartbeat():
                 while True:
                     await asyncio.sleep(10)
-                    write_status("running")
+                    publish_status("running")
 
             hb_task = asyncio.ensure_future(heartbeat())
             try:
@@ -373,27 +456,27 @@ async def run_listener():
 
         except FloodWaitError as e:
             print(f"[LISTENER] FloodWait {e.seconds}с...")
-            write_status("reconnecting", f"FloodWait {e.seconds}s")
+            publish_status("reconnecting", f"FloodWait {e.seconds}s")
             await asyncio.sleep(e.seconds)
 
         except (ConnectionError, OSError) as e:
             print(f"[LISTENER] З'єднання: {e} | retry {retry_delay}с")
-            write_status("reconnecting", str(e))
+            publish_status("reconnecting", str(e))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 300)
 
         except asyncio.CancelledError:
             print("\n[LISTENER] Зупинено")
-            write_status("stopped")
+            publish_status("stopped")
             break
 
         except Exception as e:
             print(f"[LISTENER] Помилка: {e} | retry {retry_delay}с")
-            write_status("error", str(e))
+            publish_status("error", str(e))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 300)
         else:
-            write_status("reconnecting", "відключено")
+            publish_status("reconnecting", "відключено")
             await asyncio.sleep(5)
 
     try:
@@ -426,7 +509,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_listener())
     except KeyboardInterrupt:
-        write_status("stopped")
+        write_status("stopped", extra={"diagnostics": {}})
     finally:
         try:
             os.remove(LOCK_FILE)
