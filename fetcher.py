@@ -20,38 +20,12 @@ from config import (
     SEEN_FILE, DEFAULT_SOURCES, DEFAULT_SETTINGS, DEFAULT_AI_MODEL,
     IMPORTANCE_CRITERIA
 )
+from io_utils import load_json, write_json
 from storage import Storage
 from utils import RetryConfig, retry_call, env_secret, setup_logging
 
 STORAGE = Storage()
 LOGGER = setup_logging("newsmonitor.fetcher")
-
-
-# ── Утиліти ──────────────────────────────────────────────────────────────────
-
-def load_json(path: str, default) -> dict:
-    """Завантажує JSON файл. При помилці повертає default."""
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # міграція: додаємо відсутні ключі зі збереженням наявних
-            if isinstance(default, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            return data
-        except (json.JSONDecodeError, OSError) as e:
-            LOGGER.warning("[WARN] Не вдалося прочитати %s: %s", path, e)
-    write_json(path, default)
-    return dict(default) if isinstance(default, dict) else default
-
-def write_json(path: str, data) -> None:
-    """Атомарний запис JSON через тимчасовий файл."""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 # ── Seen IDs ─────────────────────────────────────────────────────────────────
@@ -223,12 +197,31 @@ def analyze_batch(items: list, api_key: str, categories: list,
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     results = json.loads(raw)
+    if not isinstance(results, list):
+        raise ValueError("AI response must be a JSON list")
+    validated = []
+    for idx, item in enumerate(results, 1):
+        if not isinstance(item, dict):
+            continue
+        source_index = int(item.get("index", idx))
+        importance = item.get("importance", 5)
+        try:
+            importance = int(importance)
+        except (TypeError, ValueError):
+            importance = 5
+        importance = min(10, max(1, importance))
+        validated.append({
+            "index": source_index,
+            "category": item.get("category"),
+            "importance": importance,
+            "is_duplicate": bool(item.get("is_duplicate", False)),
+        })
 
     # валідуємо category
-    for r in results:
+    for r in validated:
         if r.get("category") not in cat_ids:
             r["category"] = cat_ids[0]
-    return results
+    return validated
 
 
 # ── RSS ──────────────────────────────────────────────────────────────────────
@@ -297,16 +290,16 @@ async def run():
     ai_enabled       = bool(settings.get("ai_enabled", False))
     ai_model         = settings.get("ai_model", DEFAULT_AI_MODEL)
     rss_depth        = max(1, int(settings.get("rss_depth", 10)))
-    api_key          = settings.get("anthropic_api_key", "")
+    api_key          = ""
     categories       = settings.get("categories", [])
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
-    bot_token        = settings.get("bot_token", "")
+    bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
     priorities       = settings.get("importance_priorities", "")
-    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
-    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
+    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", "")
     source_ai_enabled = {}
     for src in (sources.get("rss", []) + sources.get("telegram", [])):
         source_ai_enabled[src.get("id")] = bool(src.get("ai_enabled", True))
@@ -460,7 +453,8 @@ async def run():
         "new_count":  len(new_items),
         "items":      all_items,
     }
-    write_json(DATA_FILE, payload)
+    if os.getenv("NEWSMONITOR_WRITE_LEGACY_JSON", "").strip().lower() in {"1", "true", "yes", "on"}:
+        write_json(DATA_FILE, payload)
 
     print(f"\n  Готово: {len(all_items)} новин | нових: {len(new_items)} | "
           f"важливих: {high} | дублів: {dups} | ключових слів: {kw_hits}")
