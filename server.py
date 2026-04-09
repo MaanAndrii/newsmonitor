@@ -336,9 +336,23 @@ def detect_telegram_channel_name(username: str) -> str:
 
 # ── Авторизація Telegram ──────────────────────────────────────────────────────
 
+def _ensure_thread_event_loop():
+    """Telethon sync API in threaded HTTP handlers requires a loop bound to current thread."""
+    try:
+        asyncio.get_running_loop()
+        return
+    except RuntimeError:
+        pass
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
 def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
     """Крок 1: надсилає код підтвердження на номер телефону."""
     from telethon.sync import TelegramClient as SyncClient
+    _ensure_thread_event_loop()
     try:
         # закриваємо попередній клієнт якщо є
         _cleanup_tg_auth()
@@ -371,6 +385,8 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
         client          = _tg_auth.get("client")
         phone           = _tg_auth.get("phone")
         phone_code_hash = _tg_auth.get("phone_code_hash")
+
+    _ensure_thread_event_loop()
 
     if not client or not phone:
         return {"ok": False, "error": "Спочатку надішліть код (крок 1)"}

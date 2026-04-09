@@ -1,10 +1,26 @@
 import os
+import threading
 import unittest
 
-from server import Handler, resolve_settings_with_env
+from server import Handler, resolve_settings_with_env, _ensure_thread_event_loop
 
 
 class ServerAuthTest(unittest.TestCase):
+    def test_ensure_thread_event_loop_creates_loop_in_worker_thread(self):
+        result = {"ok": False}
+
+        def worker():
+            _ensure_thread_event_loop()
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            result["ok"] = loop is not None
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=2)
+        self.assertTrue(result["ok"])
+
     def test_auth_required_depends_on_env_pair(self):
         old_user = os.environ.get("NEWSMONITOR_AUTH_USER")
         old_pass = os.environ.get("NEWSMONITOR_AUTH_PASS")
