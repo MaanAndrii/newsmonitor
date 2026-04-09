@@ -446,9 +446,7 @@ def _tg_auth_logout() -> dict:
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _auth_required(self) -> bool:
-        # За вимогою поточної інсталяції: публічний доступ без авторизації.
-        # Адмін-екрани та API працюють без логіну навіть якщо NEWSMONITOR_AUTH_* задані.
-        return False
+        return bool(AUTH_USER and AUTH_PASS)
 
     def _authorized(self) -> bool:
         if not self._auth_required():
