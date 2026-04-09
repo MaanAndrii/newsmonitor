@@ -290,16 +290,16 @@ async def run():
     ai_enabled       = bool(settings.get("ai_enabled", False))
     ai_model         = settings.get("ai_model", DEFAULT_AI_MODEL)
     rss_depth        = max(1, int(settings.get("rss_depth", 10)))
-    api_key          = settings.get("anthropic_api_key", "")
+    api_key          = ""
     categories       = settings.get("categories", [])
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
-    bot_token        = settings.get("bot_token", "")
+    bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
     priorities       = settings.get("importance_priorities", "")
-    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", api_key)
-    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", bot_token)
+    api_key          = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", "")
+    bot_token        = env_secret("NEWSMONITOR_BOT_TOKEN", "")
     source_ai_enabled = {}
     for src in (sources.get("rss", []) + sources.get("telegram", [])):
         source_ai_enabled[src.get("id")] = bool(src.get("ai_enabled", True))
