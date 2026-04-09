@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>News Monitor</title>
+<title>News Monitor — Дашборд</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; background: #f5f5f0; color: #1a1a1a; }
@@ -238,8 +238,8 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
     <span class="countdown" id="countdown"></span>
     <span class="listener-badge" id="listener-badge"></span>
     <a class="btn settings-link" id="settings-btn" href="/settings">Налаштування</a>
-    <button class="btn auth" id="auth-btn" onclick="toggleAuth()">Увійти</button>
     <button class="btn" id="filters-btn" onclick="toggleFiltersPanel()">Фільтри</button>
+    <button class="btn auth" id="auth-btn" onclick="toggleAuth()">Увійти</button>
   </div>
 </div>
 
@@ -334,6 +334,7 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
       <button class="stab" data-stab="bot">Bot сповіщення</button>
       <button class="stab" data-stab="categories">Категорії</button>
       <button class="stab" data-stab="keywords">Ключові слова</button>
+      <button class="stab" data-stab="debug">Debug</button>
     </div>
 
     <!-- Загальні -->
@@ -580,6 +581,15 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
       </div>
     </div>
 
+    <div class="stab-panel" id="stab-debug">
+      <div class="setting-section">
+        <div class="setting-section-title">Debug API</div>
+        <div class="api-debug-box" id="api-debug-box">
+          Debug API: очікуємо дані...
+        </div>
+      </div>
+    </div>
+
     <div class="save-bar">
       <button class="btn primary" onclick="saveSettings()">Зберегти налаштування</button>
       <span style="font-size:12px;color:#aaa">Зміни застосуються при наступному зборі</span>
@@ -608,6 +618,7 @@ const SETTINGS_MODE = window.location.pathname.startsWith('/settings');
 let listenerDiagBySource = {};
 const kwUrgentMap  = {};
 let settingsCache  = {};
+const KEY_MASK = '**********';
 
 // ── Утиліти ───────────────────────────────────────────────────────────────────
 function esc(s) {
@@ -658,11 +669,15 @@ function applyViewMode() {
   const layout = document.querySelector('#page-dashboard .layout');
   document.body.classList.remove('reader-mode', 'compact-mode');
   document.body.classList.add('single-mode');
-  if (layout) layout.classList.remove('filters-hidden');
+  if (layout) layout.classList.add('filters-hidden');
 }
 function updateAdminUI() {
   const settingsLink = document.getElementById('settings-btn');
-  if (settingsLink) settingsLink.style.display = isAdmin ? '' : 'none';
+  if (settingsLink) {
+    settingsLink.style.display = '';
+    settingsLink.textContent = SETTINGS_MODE ? 'Дашборд' : 'Налаштування';
+    settingsLink.href = SETTINGS_MODE ? '/' : '/settings';
+  }
   document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
   const authBtn = document.getElementById('auth-btn');
   authBtn.style.display = '';
@@ -1306,8 +1321,16 @@ async function loadSettings() {
     document.getElementById('listener-toggle').className   = 'big-toggle '+(listenerOn?'on':'off');
     document.getElementById('listener-info').style.display = listenerOn?'block':'none';
 
-    document.getElementById('api-key-hint').textContent   = d.has_anthropic_key?'✓ Ключ збережено':'Не вказано';
-    document.getElementById('tg-hash-hint').textContent   = d.has_telegram_hash?'✓ Hash збережено':'Не вказано';
+    document.getElementById('set-api-key').value          = d.has_anthropic_key ? KEY_MASK : '';
+    document.getElementById('set-tg-hash').value          = d.has_telegram_hash ? KEY_MASK : '';
+    document.getElementById('set-bot-token').value        = d.has_bot_token ? KEY_MASK : '';
+
+    const apiHint = document.getElementById('api-key-hint');
+    apiHint.textContent = d.has_anthropic_key ? '✓ Ключ доданий і валідний' : 'Не вказано';
+    apiHint.className   = 'setting-hint ' + (d.has_anthropic_key ? 'ok' : 'err');
+    const tgHint = document.getElementById('tg-hash-hint');
+    tgHint.textContent = d.has_telegram_hash ? '✓ Hash доданий і валідний' : 'Не вказано';
+    tgHint.className   = 'setting-hint ' + (d.has_telegram_hash ? 'ok' : 'err');
     document.getElementById('bot-token-hint').textContent = d.has_bot_token?'✓ Токен збережено':'Не вказано';
     await loadApiDebug();
 
@@ -1326,6 +1349,9 @@ async function loadSettings() {
     try {
       const s=await api('/api/status');
       startCountdown(s.next_fetch_at||null);
+    } catch {}
+    try {
+      await checkTgSession();
     } catch {}
   } catch { toast('Не вдалося завантажити налаштування',true); }
 }
@@ -1458,9 +1484,9 @@ async function saveSettings() {
   const apiKey   = document.getElementById('set-api-key').value.trim();
   const tgHash   = document.getElementById('set-tg-hash').value.trim();
   const botToken = document.getElementById('set-bot-token').value.trim();
-  body.anthropic_api_key = apiKey;
-  body.telegram_api_hash = tgHash;
-  body.bot_token         = botToken;
+  body.anthropic_api_key = (apiKey === KEY_MASK) ? '' : apiKey;
+  body.telegram_api_hash = (tgHash === KEY_MASK) ? '' : tgHash;
+  body.bot_token         = (botToken === KEY_MASK) ? '' : botToken;
   try {
     const d=await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
     if (d.ok) {
@@ -1478,6 +1504,7 @@ async function saveSettings() {
 
 // ── Ініціалізація ─────────────────────────────────────────────────────────────
 async function init() {
+  document.title = SETTINGS_MODE ? 'News Monitor — Налаштування' : 'News Monitor — Дашборд';
   mountSourcesInsideSettings();
   try {
     const me = await api('/api/me');
