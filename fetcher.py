@@ -311,7 +311,7 @@ async def run():
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
-    bot_token        = settings.get("bot_token", "")
+    bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
     priorities       = settings.get("importance_priorities", "")
     api_key          = (
