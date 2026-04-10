@@ -421,9 +421,12 @@ async def run_listener():
             if matched:
                 urgent_map = {kw["phrase"].lower(): kw.get("urgent", False)
                               for kw in keywords}
+                sendable_map = {kw["phrase"].lower(): kw.get("to_telegram", True)
+                                for kw in keywords}
+                matched_sendable = [kw for kw in matched if sendable_map.get(kw.lower(), False)]
                 is_urgent  = any(urgent_map.get(kw.lower(), False) for kw in matched)
                 prefix     = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
-                kw_str     = ", ".join(matched)
+                kw_str     = ", ".join(matched_sendable or matched)
                 lines = [
                     f"{prefix}: <i>{kw_str}</i>", "",
                     f"<b>{item['title']}</b>",
@@ -432,7 +435,7 @@ async def run_listener():
                 ]
                 if item["url"]:
                     lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
-                if bot_token and bot_chat_id:
+                if bot_token and bot_chat_id and matched_sendable:
                     send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
                     LOGGER.info("[LISTENER][BOT] %s", kw_str)
 

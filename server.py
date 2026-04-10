@@ -151,18 +151,36 @@ def _digest_tick(digest_time: str):
     s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
     if s.get("bot_token") and s.get("bot_chat_id"):
         _send_digest(s["bot_token"], s["bot_chat_id"],
-                     max(1, int(s.get("digest_count", 5))))
+                     max(1, int(s.get("digest_count", 5))),
+                     str(s.get("digest_mode", "top")),
+                     s.get("keywords", []))
     _schedule_digest(digest_time, True)
 
 
-def _send_digest(bot_token: str, chat_id: str, count: int):
+def _send_digest(bot_token: str, chat_id: str, count: int, mode: str = "top", keywords: list | None = None):
     try:
         data = {"items": STORAGE.load_items()}
-        top = sorted(data.get("items", []),
-                     key=lambda x: x.get("importance", 0), reverse=True)[:count]
+        items = data.get("items", [])
+        if mode == "keywords":
+            sendable = set()
+            for kw in keywords or []:
+                if kw.get("to_telegram"):
+                    phrase = str(kw.get("phrase", "")).strip().lower()
+                    if phrase:
+                        sendable.add(phrase)
+            filtered = []
+            if sendable:
+                for it in items:
+                    matched = [str(x).strip().lower() for x in (it.get("matched_keywords") or [])]
+                    if any(m in sendable for m in matched):
+                        filtered.append(it)
+            top = sorted(filtered, key=lambda x: x.get("importance", 0), reverse=True)[:count]
+        else:
+            top = sorted(items, key=lambda x: x.get("importance", 0), reverse=True)[:count]
         if not top:
             return
-        lines = [f"<b>📰 Дайджест — топ {len(top)} новин</b>\n"]
+        title = "📰 Дайджест — за ключовими словами" if mode == "keywords" else f"📰 Дайджест — топ {len(top)} новин"
+        lines = [f"<b>{title}</b>\n"]
         for i, item in enumerate(top, 1):
             line = f"{i}. <b>{item.get('title','')}</b> [{item.get('source','')} | {item.get('importance',5)}/10]"
             if item.get("url"):
@@ -709,11 +727,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "has_anthropic_key": bool(raw.get("anthropic_api_key")),
                 "has_telegram_hash": bool(raw.get("telegram_api_hash")),
                 "has_bot_token": bool(raw.get("bot_token")),
+                "digest_mode": str(raw.get("digest_mode", "top")),
             },
             "effective": {
                 "has_anthropic_key": bool(resolved.get("anthropic_api_key")),
                 "has_telegram_hash": bool(resolved.get("telegram_api_hash")),
                 "has_bot_token": bool(resolved.get("bot_token")),
+                "digest_mode": str(resolved.get("digest_mode", "top")),
             },
         })
 
@@ -722,6 +742,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json({
             "categories": s.get("categories", []),
             "keywords":   s.get("keywords", []),
+            "theme_mode": s.get("theme_mode", "auto"),
         })
 
     def _login(self, body: dict):
@@ -938,7 +959,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
 
         # рядкові
-        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities"):
+        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities", "digest_mode", "theme_mode"):
             if k in body:
                 settings[k] = str(body[k])
 
@@ -966,8 +987,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for kw in body["keywords"]:
                 phrase = str(kw.get("phrase", "")).strip()
                 urgent = bool(kw.get("urgent", False))
+                to_telegram = bool(kw.get("to_telegram", True))
                 if phrase:
-                    kws.append({"id": phrase, "phrase": phrase, "urgent": urgent})
+                    kws.append({"id": phrase, "phrase": phrase, "urgent": urgent, "to_telegram": to_telegram})
             settings["keywords"] = kws
 
         write_json(SETTINGS_FILE, settings)

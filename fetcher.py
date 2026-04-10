@@ -131,14 +131,20 @@ def notify_keywords(new_items: list, keywords: list,
     if not bot_token or not chat_id or not keywords:
         return 0
     urgent_map = {kw["phrase"].lower(): kw.get("urgent", False) for kw in keywords}
+    sendable   = {kw["phrase"].lower() for kw in keywords if kw.get("to_telegram", True)}
+    if not sendable:
+        return 0
     sent = 0
     for item in new_items:
         matched = item.get("matched_keywords", [])
         if not matched:
             continue
+        matched_sendable = [kw for kw in matched if kw.lower() in sendable]
+        if not matched_sendable:
+            continue
         is_urgent = any(urgent_map.get(kw.lower(), False) for kw in matched)
         prefix    = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
-        kw_str    = ", ".join(matched)
+        kw_str    = ", ".join(matched_sendable)
         lines = [f"{prefix}: <i>{kw_str}</i>", "", f"<b>{item['title']}</b>"]
         if item.get("summary"):
             lines.append(item["summary"])

@@ -13,14 +13,12 @@ a { color: inherit; text-decoration: none; }
 .topbar { background: #fff; border-bottom: 1px solid #e5e5e0; padding: 0 24px; display: flex; align-items: stretch; justify-content: space-between; position: sticky; top: 0; z-index: 10; height: 52px; }
 .topbar-left { display: flex; align-items: center; gap: 20px; }
 .logo { font-size: 15px; font-weight: 600; }
-.version-badge { font-size: 11px; color: #888; border: 1px solid #ddd; border-radius: 10px; padding: 1px 8px; }
 .tabs { display: flex; align-items: stretch; }
 .settings-link { text-decoration: none; }
 .tab { font-size: 13px; padding: 0 14px; border: none; background: transparent; cursor: pointer; color: #888; border-bottom: 2px solid transparent; height: 52px; text-align: center; }
 .tab:hover { color: #333; }
 .tab.on { color: #185FA5; border-bottom-color: #185FA5; font-weight: 500; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
-.upd-time { font-size: 12px; color: #aaa; }
 .countdown { font-size: 12px; color: #ef9f27; display: none; }
 .listener-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; display: none; }
 .listener-badge.running      { background: #e8f5e9; color: #2e7d32; }
@@ -45,9 +43,12 @@ a { color: inherit; text-decoration: none; }
 
 /* Stats */
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+.mobile-clock { display: none; margin-bottom: 10px; }
 .stat { background: #fff; border-radius: 10px; padding: 12px 16px; border: 1px solid #e5e5e0; }
 .stat p { font-size: 11px; color: #888; margin-bottom: 4px; }
 .stat span { font-size: 22px; font-weight: 600; }
+.clock-val { font-size: 24px; font-weight: 700; letter-spacing: .5px; }
+.clock-sub { font-size: 12px; color: #888; margin-top: 2px; }
 
 /* Dashboard layout */
 .layout { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: start; }
@@ -217,24 +218,32 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
 
 @media (max-width: 700px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
+  .stats .stat.clock { display: none; }
+  .mobile-clock { display: block; }
   .layout { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .settings-grid { grid-template-columns: 1fr; }
 }
+
+/* Themes */
+body.theme-dark { background: #16181d; color: #e7eaf0; }
+body.theme-dark .topbar, body.theme-dark .panel, body.theme-dark .stat, body.theme-dark .sidebar, body.theme-dark .card { background: #1f232b; border-color: #343b47; color: #e7eaf0; }
+body.theme-dark .tab, body.theme-dark .chip, body.theme-dark .setting-row label, body.theme-dark .row-sub { color: #c8ced9; }
+body.theme-dark .chip:hover, body.theme-dark .btn:hover, body.theme-dark .src-table tr:hover td { background: #262c36; }
+body.theme-dark .btn { background: #232934; border-color: #3a4150; color: #e7eaf0; }
+body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .setting-row input, body.theme-dark .setting-row select, body.theme-dark .setting-row textarea { background: #1a1f27; color: #e7eaf0; border-color: #3a4150; }
 </style>
 </head>
 <body>
 
 <div class="topbar">
   <div class="topbar-left">
-    <span class="logo">News Monitor</span>
-    <span class="version-badge" id="app-version">v—</span>
+    <span class="logo" id="app-title">News Monitor v—</span>
     <div class="tabs">
       <button class="tab on" data-page="dashboard" id="tab-dashboard">Дашборд</button>
     </div>
   </div>
   <div class="topbar-right">
-    <span class="upd-time" id="upd-time"></span>
     <span class="countdown" id="countdown"></span>
     <span class="listener-badge" id="listener-badge"></span>
     <a class="btn settings-link" id="settings-btn" href="/settings">Налаштування</a>
@@ -247,10 +256,15 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
 
 <!-- ═══ ДАШБОРД ═══ -->
 <div class="container page on" id="page-dashboard">
+  <div class="stat mobile-clock">
+    <p>Час</p>
+    <div class="clock-val" id="clock-mobile">—</div>
+    <div class="clock-sub" id="clock-mobile-date">—</div>
+  </div>
   <div class="stats">
     <div class="stat"><p>Всього новин</p><span id="s-total">—</span></div>
-    <div class="stat"><p>Важливих (8+)</p><span id="s-high" style="color:#e53935">—</span></div>
-    <div class="stat"><p>Ключових слів</p><span id="s-kw" style="color:#e65100">—</span></div>
+    <div class="stat"><p>Важливих / ключових</p><span id="s-hi-kw">— / —</span></div>
+    <div class="stat clock"><p>Час</p><div class="clock-val" id="clock-main">—</div><div class="clock-sub" id="clock-date">—</div></div>
   </div>
   <div class="layout">
     <div class="sidebar">
@@ -365,6 +379,19 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
           <label>Персональні пріоритети для оцінки важливості</label>
           <textarea id="set-priorities" placeholder="Опишіть що важливо для вас. Наприклад: новини про Львів мають вищий пріоритет; силові структури і правоохоронці важливіші за загальні новини; прес-релізи та вітання оцінювати низько..."></textarea>
           <div class="setting-hint">Claude враховує ці пріоритети при оцінці важливості 1-10</div>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-section-title">Тема інтерфейсу</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Режим теми</label>
+            <select id="set-theme-mode">
+              <option value="auto">Автоматично (від гаджета)</option>
+              <option value="light">Світла (вручну)</option>
+              <option value="dark">Темна (вручну)</option>
+            </select>
+          </div>
         </div>
       </div>
       <div class="setting-section">
@@ -529,6 +556,13 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
         </div>
         <div class="settings-grid">
           <div class="setting-row">
+            <label>Режим відправки</label>
+            <select id="set-digest-mode">
+              <option value="top">X топ-новин у вибраний час</option>
+              <option value="keywords">Лише новини за ключовими словами</option>
+            </select>
+          </div>
+          <div class="setting-row">
             <label>Час відправки</label>
             <input type="time" id="set-digest-time" value="09:00">
           </div>
@@ -567,7 +601,7 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
           При спрацюванні — бейдж на картці і сповіщення в Bot (якщо налаштовано).
         </div>
         <table class="src-table">
-          <thead><tr><th>Фраза</th><th style="width:110px">Тип</th><th style="width:44px"></th></tr></thead>
+          <thead><tr><th>Фраза</th><th style="width:120px">Важлива</th><th style="width:140px">В Telegram</th><th style="width:44px"></th></tr></thead>
           <tbody id="kw-tbody"></tbody>
         </table>
       </div>
@@ -576,6 +610,10 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
         <div class="field" style="flex-direction:row;align-items:center;gap:6px;padding-top:18px">
           <input type="checkbox" id="kw-urgent" style="width:16px;height:16px;cursor:pointer">
           <label for="kw-urgent" style="font-size:13px;color:#444;cursor:pointer;text-transform:none;letter-spacing:0">Терміново (⚠️)</label>
+        </div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:6px;padding-top:18px">
+          <input type="checkbox" id="kw-telegram" checked style="width:16px;height:16px;cursor:pointer">
+          <label for="kw-telegram" style="font-size:13px;color:#444;cursor:pointer;text-transform:none;letter-spacing:0">Відправляти в Telegram</label>
         </div>
         <button class="btn primary" onclick="addKeyword(this.closest('.add-form'))">+ Додати</button>
       </div>
@@ -595,6 +633,9 @@ body.single-mode .card-summary { font-size: 13px; line-height: 1.7; }
       <span style="font-size:12px;color:#aaa">Зміни застосуються при наступному зборі</span>
     </div>
   </div>
+</div>
+<div style="text-align:center;font-size:12px;color:#888;padding:14px 10px 22px;">
+  Створено Маринюк Андрій для онлайн-медіа "Гал-інфо". 2006 р. Всі права застережено.
 </div>
 
 <script>
@@ -620,6 +661,7 @@ let sourceActivityById = {};
 const kwUrgentMap  = {};
 let settingsCache  = {};
 const KEY_MASK = '**********';
+let clockTimer = null;
 
 // ── Утиліти ───────────────────────────────────────────────────────────────────
 function esc(s) {
@@ -675,7 +717,7 @@ function applyViewMode() {
 function updateAdminUI() {
   const settingsLink = document.getElementById('settings-btn');
   if (settingsLink) {
-    settingsLink.style.display = '';
+    settingsLink.style.display = isAdmin ? '' : 'none';
     settingsLink.textContent = SETTINGS_MODE ? 'Дашборд' : 'Налаштування';
     settingsLink.href = SETTINGS_MODE ? '/' : '/settings';
   }
@@ -925,8 +967,7 @@ function updateCounts() {
   const kwCnt   = allNews.filter(n => n.matched_keywords && n.matched_keywords.length).length;
 
   document.getElementById('s-total').textContent = total;
-  document.getElementById('s-high').textContent  = high;
-  document.getElementById('s-kw').textContent    = kwCnt;
+  document.getElementById('s-hi-kw').textContent  = `${high} / ${kwCnt}`;
 
   document.getElementById('cnt-all').textContent    = total;
   document.getElementById('cnt-unread').textContent = total - readCnt;
@@ -976,7 +1017,6 @@ async function loadNews(force=false) {
     allNews = data.items || [];
     const newCount = data.new_count || 0;
     newIds = new Set(allNews.slice(0, newCount).map(n => n.id));
-    document.getElementById('upd-time').textContent = fmtTime(data.updated_at);
     updateCounts();
     renderSidebarSrc();
     renderKeywordChips();
@@ -1346,8 +1386,11 @@ async function loadSettings() {
     document.getElementById('set-tg-id').value         = d.telegram_api_id||'';
     document.getElementById('set-bot-chat-id').value   = d.bot_chat_id||'';
     document.getElementById('digest-toggle').className = 'big-toggle '+(d.digest_enabled?'on':'off');
+    document.getElementById('set-digest-mode').value   = d.digest_mode||'top';
     document.getElementById('set-digest-time').value   = d.digest_time||'09:00';
     document.getElementById('set-digest-count').value  = d.digest_count||5;
+    document.getElementById('set-theme-mode').value    = d.theme_mode||'auto';
+    applyTheme(d.theme_mode||'auto');
 
     const listenerOn = d.listener_enabled||false;
     document.getElementById('listener-toggle').className   = 'big-toggle '+(listenerOn?'on':'off');
@@ -1459,15 +1502,19 @@ function renderKwTable(kws) {
   const tbody=document.getElementById('kw-tbody');
   tbody.innerHTML='';
   if (!kws.length) {
-    tbody.innerHTML=`<tr><td colspan="3" style="text-align:center;color:#aaa;padding:20px">Немає ключових слів. Додайте нижче.</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">Немає ключових слів. Додайте нижче.</td></tr>`;
     return;
   }
   kws.forEach((kw,i)=>{
     const tr=document.createElement('tr');
     tr.innerHTML=`
       <td><div class="row-name">${esc(kw.phrase)}</div></td>
-      <td><span class="badge ${kw.urgent?'b-kw-urg':'b-kw'}">${kw.urgent?'⚠️ Терміново':'Звичайне'}</span></td>
+      <td><input type="checkbox" ${kw.urgent?'checked':''}></td>
+      <td><input type="checkbox" ${kw.to_telegram!==false?'checked':''}></td>
       <td><button class="del-btn">✕</button></td>`;
+    const boxes = tr.querySelectorAll('input[type=checkbox]');
+    boxes[0].addEventListener('change', function(){ settingsCache.keywords[i].urgent = this.checked; });
+    boxes[1].addEventListener('change', function(){ settingsCache.keywords[i].to_telegram = this.checked; });
     tr.querySelector('.del-btn').addEventListener('click',()=>{
       settingsCache.keywords.splice(i,1);
       renderKwTable(settingsCache.keywords);
@@ -1479,16 +1526,18 @@ function renderKwTable(kws) {
 function addKeyword(form) {
   const phraseEl=form.querySelector('.src-inp-phrase');
   const urgentEl=document.getElementById('kw-urgent');
+  const tgEl=document.getElementById('kw-telegram');
   const phrase=phraseEl.value.trim();
   if (!phrase) { toast('Введіть фразу',true); return; }
   if (!settingsCache.keywords) settingsCache.keywords=[];
   if (settingsCache.keywords.find(k=>k.phrase.toLowerCase()===phrase.toLowerCase())) {
     toast('Таке слово вже є',true); return;
   }
-  settingsCache.keywords.push({id:phrase,phrase,urgent:urgentEl?urgentEl.checked:false});
+  settingsCache.keywords.push({id:phrase,phrase,urgent:urgentEl?urgentEl.checked:false,to_telegram:tgEl?tgEl.checked:true});
   renderKwTable(settingsCache.keywords);
   phraseEl.value='';
   if (urgentEl) urgentEl.checked=false;
+  if (tgEl) tgEl.checked=true;
   toast('Додано. Збережіть налаштування.');
 }
 
@@ -1505,8 +1554,10 @@ async function saveSettings() {
     telegram_api_id:       parseInt(document.getElementById('set-tg-id').value)||0,
     bot_chat_id:           document.getElementById('set-bot-chat-id').value.trim(),
     digest_enabled:        document.getElementById('digest-toggle').classList.contains('on'),
+    digest_mode:           document.getElementById('set-digest-mode').value,
     digest_time:           document.getElementById('set-digest-time').value,
     digest_count:          parseInt(document.getElementById('set-digest-count').value)||5,
+    theme_mode:            document.getElementById('set-theme-mode').value,
     listener_enabled:      document.getElementById('listener-toggle').classList.contains('on'),
     categories:            settingsCache.categories||[],
     keywords:              settingsCache.keywords||[],
@@ -1557,7 +1608,8 @@ async function init() {
 
   try {
     const v = await api('/api/version');
-    document.getElementById('app-version').textContent = 'v' + (v.version || '—');
+    const version = v.version || '—';
+    document.getElementById('app-title').textContent = 'News Monitor v' + version;
   } catch {}
   try {
     const d=await api(isAdmin ? '/api/settings' : '/api/dashboard/config');
@@ -1565,6 +1617,7 @@ async function init() {
     Object.keys(kwUrgentMap).forEach(k=>delete kwUrgentMap[k]);
     (d.keywords||[]).forEach(kw=>{ kwUrgentMap[kw.phrase.toLowerCase()]=kw.urgent; });
     hasBotToken=!!d.has_bot_token;
+    applyTheme((d.theme_mode || 'auto'));
   } catch {}
   try {
     const s=await api('/api/status');
@@ -1582,6 +1635,38 @@ async function init() {
     await loadSettings();
   }
 }
+
+function tickClock() {
+  const now = new Date();
+  const tm = now.toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const dt = now.toLocaleDateString('uk-UA', {weekday:'short', day:'2-digit', month:'2-digit', year:'numeric'});
+  const a = document.getElementById('clock-main');
+  const b = document.getElementById('clock-date');
+  const c = document.getElementById('clock-mobile');
+  const d = document.getElementById('clock-mobile-date');
+  if (a) a.textContent = tm;
+  if (b) b.textContent = dt;
+  if (c) c.textContent = tm;
+  if (d) d.textContent = dt;
+}
+
+function applyTheme(mode) {
+  const m = mode || 'auto';
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const dark = m === 'dark' || (m === 'auto' && prefersDark);
+  document.body.classList.toggle('theme-dark', dark);
+}
+
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    const sel = document.getElementById('set-theme-mode');
+    const mode = sel ? sel.value : 'auto';
+    if (mode === 'auto') applyTheme('auto');
+  });
+}
+
+clockTimer = setInterval(tickClock, 1000);
+tickClock();
 
 init();
 </script>
