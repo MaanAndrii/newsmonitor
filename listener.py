@@ -258,6 +258,9 @@ async def run_listener():
     keywords    = settings.get("keywords", [])
     bot_token   = ""
     bot_chat_id = settings.get("bot_chat_id", "")
+    notify_keywords_enabled = bool(settings.get("notify_keywords_enabled", False))
+    notify_importance_enabled = bool(settings.get("notify_importance_enabled", False))
+    notify_importance_min = max(1, int(settings.get("notify_importance_min", 8) or 8))
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
@@ -435,7 +438,7 @@ async def run_listener():
                 ]
                 if item["url"]:
                     lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
-                if bot_token and bot_chat_id and matched_sendable:
+                if bot_token and bot_chat_id and matched_sendable and notify_keywords_enabled:
                     send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
                     LOGGER.info("[LISTENER][BOT] %s", kw_str)
 
@@ -452,6 +455,14 @@ async def run_listener():
                 LOGGER.info("[LISTENER][AI] %s | %s/10", item["category"], item["importance"])
             except Exception as e:
                 LOGGER.warning("[LISTENER][AI] Помилка: %s", e)
+
+        if bot_token and bot_chat_id and notify_importance_enabled and int(item.get("importance", 5) or 5) >= notify_importance_min:
+            lines = [f"🔥 <b>{item.get('title', '')}</b>", f"Важливість: {item.get('importance', 5)}/10"]
+            if item.get("summary"):
+                lines.append(item["summary"])
+            if item.get("url"):
+                lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
+            send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
 
         # Зберігаємо
         fresh = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)

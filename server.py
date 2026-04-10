@@ -164,7 +164,7 @@ def _send_digest(bot_token: str, chat_id: str, count: int, mode: str = "top", ke
         if mode == "keywords":
             sendable = set()
             for kw in keywords or []:
-                if kw.get("to_telegram"):
+                if kw.get("to_telegram", True):
                     phrase = str(kw.get("phrase", "")).strip().lower()
                     if phrase:
                         sendable.add(phrase)
@@ -647,6 +647,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code",
             "/api/tg/sign_in",
             "/api/tg/logout",
+            "/api/notifications/clear",
         }
         if p in admin_only and not self._require_admin():
             return
@@ -663,6 +664,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code":     lambda: self._tg_send_code(body),
             "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
             "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
+            "/api/notifications/clear": self._clear_notifications,
             "/api/logout":           self._logout,
         }
         if p in routes:
@@ -743,6 +745,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "categories": s.get("categories", []),
             "keywords":   s.get("keywords", []),
             "theme_mode": s.get("theme_mode", "auto"),
+            "footer_text": s.get("footer_text", ""),
         })
 
     def _login(self, body: dict):
@@ -939,13 +942,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
 
         # булеві
-        for k in ("ai_enabled", "digest_enabled", "listener_enabled"):
+        for k in ("ai_enabled", "digest_enabled", "listener_enabled", "notify_keywords_enabled", "notify_importance_enabled"):
             if k in body:
                 settings[k] = bool(body[k])
 
         # числові
         for k in ("rss_depth", "auto_fetch_interval",
-                  "keep_days", "max_items", "digest_count"):
+                  "keep_days", "max_items", "digest_count", "notify_importance_min"):
             if k in body:
                 try:
                     settings[k] = max(0, int(body[k]))
@@ -959,7 +962,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
 
         # рядкові
-        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities", "digest_mode", "theme_mode"):
+        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities", "digest_mode", "theme_mode", "footer_text"):
             if k in body:
                 settings[k] = str(body[k])
 
@@ -1005,6 +1008,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         _schedule_auto_fetch(settings.get("auto_fetch_interval", 0))
         _schedule_digest(settings.get("digest_time", "09:00"),
                          settings.get("digest_enabled", False))
+        self.send_json({"ok": True})
+
+    def _clear_notifications(self):
+        settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        settings["digest_enabled"] = False
+        settings["notify_keywords_enabled"] = False
+        settings["notify_importance_enabled"] = False
+        settings["digest_mode"] = "top"
+        settings["digest_count"] = 5
+        settings["digest_time"] = "09:00"
+        write_json(SETTINGS_FILE, settings)
+        _schedule_digest(settings.get("digest_time", "09:00"), False)
         self.send_json({"ok": True})
 
     def _send_news(self, body: dict):

@@ -245,7 +245,6 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
   </div>
   <div class="topbar-right">
     <span class="countdown" id="countdown"></span>
-    <span class="listener-badge" id="listener-badge"></span>
     <a class="btn settings-link" id="settings-btn" href="/settings">Налаштування</a>
     <button class="btn" id="filters-btn" onclick="toggleFiltersPanel()">Фільтри</button>
     <button class="btn auth" id="auth-btn" onclick="toggleAuth()">Увійти</button>
@@ -264,7 +263,7 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
   <div class="stats">
     <div class="stat"><p>Всього новин</p><span id="s-total">—</span></div>
     <div class="stat"><p>Важливих / ключових</p><span id="s-hi-kw">— / —</span></div>
-    <div class="stat clock"><p>Час</p><div class="clock-val" id="clock-main">—</div><div class="clock-sub" id="clock-date">—</div></div>
+    <div class="stat clock"><p>Час <span id="listener-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;margin-left:6px;background:#e53935;"></span></p><div class="clock-val" id="clock-main">—</div><div class="clock-sub" id="clock-date">—</div></div>
   </div>
   <div class="layout">
     <div class="sidebar">
@@ -313,7 +312,7 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
       <div class="panel-title"><span class="badge b-rss">RSS</span> Веб-сайти <span class="panel-count" id="rss-count"></span></div>
     </div>
     <table class="src-table">
-      <thead><tr><th>Назва</th><th>URL стрічки</th><th style="width:150px">Останнє повідомлення</th><th style="width:70px">AI</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
+      <thead><tr><th id="rss-sort-name" style="cursor:pointer">Назва ↕</th><th>URL стрічки</th><th id="rss-sort-activity" style="width:150px;cursor:pointer">Останнє повідомлення ↕</th><th style="width:70px">AI</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
       <tbody id="rss-tbody"></tbody>
     </table>
     <div class="add-form" id="rss-form">
@@ -327,7 +326,7 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
       <div class="panel-title"><span class="badge b-tg">Telegram</span> Канали <span class="panel-count" id="tg-count"></span></div>
     </div>
     <table class="src-table">
-      <thead><tr><th>Назва</th><th>Посилання</th><th style="width:150px">Останнє повідомлення</th><th style="width:70px">AI</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
+      <thead><tr><th id="tg-sort-name" style="cursor:pointer">Назва ↕</th><th>Посилання</th><th id="tg-sort-activity" style="width:150px;cursor:pointer">Останнє повідомлення ↕</th><th style="width:70px">AI</th><th style="width:70px">Активне</th><th style="width:96px"></th></tr></thead>
       <tbody id="tg-tbody"></tbody>
     </table>
     <div class="add-form" id="tg-form">
@@ -391,6 +390,15 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
               <option value="light">Світла (вручну)</option>
               <option value="dark">Темна (вручну)</option>
             </select>
+          </div>
+        </div>
+      </div>
+      <div class="setting-section">
+        <div class="setting-section-title">Футер</div>
+        <div class="settings-grid">
+          <div class="setting-row">
+            <label>Текст у футері</label>
+            <input type="text" id="set-footer-text">
           </div>
         </div>
       </div>
@@ -547,8 +555,8 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
         <div style="margin-bottom:14px">
           <div class="setting-toggle-row">
             <div>
-              <div class="setting-toggle-label">Щоденний дайджест</div>
-              <div class="setting-toggle-desc">Автоматична відправка топ новин в заданий час</div>
+              <div class="setting-toggle-label">Сповіщення за розкладом</div>
+              <div class="setting-toggle-desc">Відправка за часом: топ або за ключовими словами</div>
             </div>
             <button class="big-toggle off" id="digest-toggle"
               onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
@@ -571,6 +579,29 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
             <input type="number" id="set-digest-count" min="1" max="20" value="5">
           </div>
         </div>
+        <div class="setting-toggle-row" style="margin-top:14px">
+          <div>
+            <div class="setting-toggle-label">Сповіщення за ключовими словами (миттєво)</div>
+          </div>
+          <button class="big-toggle off" id="notify-keywords-toggle"
+            onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
+        </div>
+        <div class="setting-toggle-row" style="margin-top:12px">
+          <div>
+            <div class="setting-toggle-label">Сповіщення за важливістю (миттєво)</div>
+          </div>
+          <button class="big-toggle off" id="notify-importance-toggle"
+            onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
+        </div>
+        <div class="settings-grid" style="margin-top:10px">
+          <div class="setting-row">
+            <label>Поріг важливості</label>
+            <input type="number" id="set-notify-importance-min" min="1" max="10" value="8">
+          </div>
+        </div>
+        <div style="margin-top:10px">
+          <button class="btn danger sm" onclick="clearNotifications()">Очистити всі запрограмовані сповіщення</button>
+        </div>
       </div>
     </div>
 
@@ -590,6 +621,13 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
         <div class="field"><label>Назва категорії</label><input type="text" class="w-md src-inp-name" placeholder="Наприклад: Політика"></div>
         <div class="field"><label>Колір</label><input type="color" value="#185FA5" class="src-inp-color" style="width:44px;height:32px;padding:2px;border-radius:7px;border:1px solid #d0d0c8;cursor:pointer"></div>
         <button class="btn primary" onclick="addCategory(this.closest('.add-form'))">+ Додати</button>
+      </div>
+    </div>
+
+    <div class="stab-panel" id="stab-debug">
+      <div class="setting-section">
+        <div class="setting-section-title">Debug слухача</div>
+        <div id="listener-debug-box" class="setting-hint">Очікуємо статус...</div>
       </div>
     </div>
 
@@ -634,8 +672,8 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
     </div>
   </div>
 </div>
-<div style="text-align:center;font-size:12px;color:#888;padding:14px 10px 22px;">
-  Створено Маринюк Андрій для онлайн-медіа "Гал-інфо" / 2026 р. / © Всі права застережено.
+<div id="footer-text" style="text-align:center;font-size:12px;color:#888;padding:14px 10px 22px;">
+  Створено Маринюк Андрій для онлайн-медіа "Гал-інфо". 2006 р. Всі права застережено.
 </div>
 
 <script>
@@ -662,6 +700,7 @@ const kwUrgentMap  = {};
 let settingsCache  = {};
 const KEY_MASK = '**********';
 let clockTimer = null;
+const sourceSortMode = { rss: 'name', telegram: 'name' };
 
 // ── Утиліти ───────────────────────────────────────────────────────────────────
 function esc(s) {
@@ -673,6 +712,10 @@ function slugify(s) {
   return s.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_а-яёіїєґ]/gi,'');
 }
 function impColor(n) { return n>=8?'#e53935':n>=6?'#ef9f27':'#4caf50'; }
+function aiScoreColor(n) {
+  const analyzed = !!(n && ((n.category && n.category !== 'other') || Number(n.importance || 5) !== 5));
+  return analyzed ? '#2e7d32' : '#e53935';
+}
 function impDots(n) {
   let h='';
   for(let i=1;i<=10;i++)
@@ -772,7 +815,7 @@ document.querySelectorAll('.stab').forEach(t => t.addEventListener('click', () =
   document.getElementById('stab-' + t.dataset.stab).classList.add('on');
   if (t.dataset.stab === 'sources') loadSources();
   if (t.dataset.stab === 'telegram-auth') checkTgSession();
-  if (t.dataset.stab === 'debug') loadApiDebug();
+  if (t.dataset.stab === 'debug') loadListenerDebug();
 }));
 
 document.querySelectorAll('.chip[data-f]').forEach(c => c.addEventListener('click', () => {
@@ -784,10 +827,10 @@ document.querySelectorAll('.chip[data-f]').forEach(c => c.addEventListener('clic
 
 // ── Listener badge ────────────────────────────────────────────────────────────
 function updateListenerUI(s) {
-  const badge = document.getElementById('listener-badge');
+  const badge = document.getElementById('listener-dot');
   const box   = document.getElementById('listener-status-box');
   if (!s || s.status === 'stopped' || s.status === 'starting') {
-    badge.style.display = 'none';
+    if (badge) badge.style.background = '#e53935';
     box.className = 'listener-status-box stopped';
     return;
   }
@@ -798,9 +841,7 @@ function updateListenerUI(s) {
     unknown:      { label:'? Не відповідає',   cls:'error',         pulse:'red',    text:'Слухач не відповідає > 30с' },
   };
   const info = map[s.status] || map.unknown;
-  badge.className   = `listener-badge ${info.cls}`;
-  badge.textContent = info.label;
-  badge.style.display = 'inline';
+  if (badge) badge.style.background = info.cls === 'running' ? '#4caf50' : '#e53935';
   box.className = `listener-status-box ${info.cls}`;
   if (info.text) {
     box.innerHTML = `<div class="pulse ${info.pulse}"></div><span>${esc(info.text)}</span>`;
@@ -944,7 +985,7 @@ function renderList() {
       <div class="card-footer">
         <div class="imp-wrap">
           <div class="imp-dots">${impDots(n.importance)}</div>
-          <span class="imp-num" style="color:${impColor(n.importance)}">${n.importance}/10</span>
+          <span class="imp-num" style="color:${aiScoreColor(n)}">${n.importance}/10</span>
         </div>
         ${n.url?`<a class="read-link" href="${esc(n.url)}" target="_blank" rel="noopener">Читати →</a>`:''}
       </div>`;
@@ -1138,7 +1179,14 @@ async function loadSources() {
 function renderSrcTable(type, list) {
   const tbody   = document.getElementById(type==='rss'?'rss-tbody':'tg-tbody');
   const countEl = document.getElementById(type==='rss'?'rss-count':'tg-count');
-  const sorted = [...list].sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), 'uk', {sensitivity:'base'}));
+  const sorted = [...list].sort((a,b) => {
+    if (sourceSortMode[type] === 'activity') {
+      const at = (sourceActivityById[a.id] && Date.parse(sourceActivityById[a.id].time || '')) || 0;
+      const bt = (sourceActivityById[b.id] && Date.parse(sourceActivityById[b.id].time || '')) || 0;
+      return bt - at;
+    }
+    return String(a.name||'').localeCompare(String(b.name||''), 'uk', {sensitivity:'base'});
+  });
   countEl.textContent = `${sorted.filter(s=>s.enabled).length} з ${sorted.length} активних`;
   tbody.innerHTML='';
   if (!sorted.length) {
@@ -1390,6 +1438,10 @@ async function loadSettings() {
     document.getElementById('set-digest-time').value   = d.digest_time||'09:00';
     document.getElementById('set-digest-count').value  = d.digest_count||5;
     document.getElementById('set-theme-mode').value    = d.theme_mode||'auto';
+    document.getElementById('set-footer-text').value   = d.footer_text||'';
+    document.getElementById('notify-keywords-toggle').className = 'big-toggle '+(d.notify_keywords_enabled?'on':'off');
+    document.getElementById('notify-importance-toggle').className = 'big-toggle '+(d.notify_importance_enabled?'on':'off');
+    document.getElementById('set-notify-importance-min').value = d.notify_importance_min||8;
     applyTheme(d.theme_mode||'auto');
 
     const listenerOn = d.listener_enabled||false;
@@ -1558,6 +1610,10 @@ async function saveSettings() {
     digest_time:           document.getElementById('set-digest-time').value,
     digest_count:          parseInt(document.getElementById('set-digest-count').value)||5,
     theme_mode:            document.getElementById('set-theme-mode').value,
+    footer_text:           document.getElementById('set-footer-text').value.trim(),
+    notify_keywords_enabled: document.getElementById('notify-keywords-toggle').classList.contains('on'),
+    notify_importance_enabled: document.getElementById('notify-importance-toggle').classList.contains('on'),
+    notify_importance_min: parseInt(document.getElementById('set-notify-importance-min').value)||8,
     listener_enabled:      document.getElementById('listener-toggle').classList.contains('on'),
     categories:            settingsCache.categories||[],
     keywords:              settingsCache.keywords||[],
@@ -1587,6 +1643,18 @@ async function saveSettings() {
 async function init() {
   document.title = SETTINGS_MODE ? 'News Monitor — Налаштування' : 'News Monitor — Дашборд';
   mountSourcesInsideSettings();
+  const bindSort = (id, type, mode) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', () => {
+      sourceSortMode[type] = mode;
+      loadSources();
+    });
+  };
+  bindSort('rss-sort-name', 'rss', 'name');
+  bindSort('rss-sort-activity', 'rss', 'activity');
+  bindSort('tg-sort-name', 'telegram', 'name');
+  bindSort('tg-sort-activity', 'telegram', 'activity');
   try {
     const me = await api('/api/me');
     isAdmin = !!me.admin;
@@ -1618,6 +1686,7 @@ async function init() {
     (d.keywords||[]).forEach(kw=>{ kwUrgentMap[kw.phrase.toLowerCase()]=kw.urgent; });
     hasBotToken=!!d.has_bot_token;
     applyTheme((d.theme_mode || 'auto'));
+    applyFooterText(d.footer_text || '');
   } catch {}
   try {
     const s=await api('/api/status');
@@ -1633,6 +1702,33 @@ async function init() {
     startBgPolling();
   } else {
     await loadSettings();
+  }
+}
+
+function applyFooterText(text) {
+  const el = document.getElementById('footer-text');
+  if (el && text) el.textContent = text;
+}
+
+async function clearNotifications() {
+  if (!isAdmin) return;
+  const d = await api('/api/notifications/clear', {method:'POST', body:'{}'});
+  if (d.ok) {
+    toast('Сповіщення очищено');
+    await loadSettings();
+  } else {
+    toast(d.error || 'Помилка', true);
+  }
+}
+
+async function loadListenerDebug() {
+  const box = document.getElementById('listener-debug-box');
+  if (!box) return;
+  try {
+    const ls = await api('/api/listener/status');
+    box.textContent = `Статус: ${ls.status || 'unknown'} | Помилка: ${ls.error || 'немає'} | Updated: ${ls.updated_at || '—'}`;
+  } catch {
+    box.textContent = 'Не вдалося отримати статус слухача.';
   }
 }
 

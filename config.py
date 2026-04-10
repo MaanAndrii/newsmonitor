@@ -60,11 +60,15 @@ DEFAULT_SETTINGS = {
     "digest_time":            "09:00",
     "digest_count":           5,
     "digest_mode":            "top",   # top | keywords
+    "notify_keywords_enabled": False,
+    "notify_importance_enabled": False,
+    "notify_importance_min": 8,
     # Категорії та ключові слова — порожні, налаштовуються вручну
     "categories":             [],
     "keywords":               [],
     # UI theme
     "theme_mode":             "auto",  # auto | light | dark
+    "footer_text":            "Створено Маринюк Андрій для онлайн-медіа \"Гал-інфо\". 2006 р. Всі права застережено.",
     # Security
     "web_auth_enabled":       False,
 }

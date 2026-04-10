@@ -319,6 +319,9 @@ async def run():
     max_items        = max(10, int(settings.get("max_items", 500)))
     bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
+    notify_keywords_enabled = bool(settings.get("notify_keywords_enabled", False))
+    notify_importance_enabled = bool(settings.get("notify_importance_enabled", False))
+    notify_importance_min = max(1, int(settings.get("notify_importance_min", 8) or 8))
     priorities       = settings.get("importance_priorities", "")
     api_key          = (
         env_secret("NEWSMONITOR_ANTHROPIC_API_KEY")
@@ -391,8 +394,15 @@ async def run():
         for item in all_items:
             item.setdefault("matched_keywords", [])
 
-    # ── AI аналіз (тільки нові) ──────────────────────────────────────────────
-    ai_candidates = [it for it in new_items if source_ai_enabled.get(it.get("source_id"), True)]
+    # ── AI аналіз (нові + раніше неоцінені) ──────────────────────────────────
+    default_cat = categories[0]["id"] if categories else ""
+    stale_items = [
+        it for it in old_items
+        if source_ai_enabled.get(it.get("source_id"), True)
+        and (not it.get("category") or it.get("category") == default_cat)
+        and int(it.get("importance", 5) or 5) == 5
+    ]
+    ai_candidates = [it for it in new_items if source_ai_enabled.get(it.get("source_id"), True)] + stale_items
     if ai_candidates and ai_enabled and api_key and categories:
         LOGGER.info("[2/4] AI аналіз: %s нових новин | %s", len(ai_candidates), ai_model)
         BATCH = 15
@@ -414,7 +424,7 @@ async def run():
             except Exception as e:
                 LOGGER.warning("  помилка batch AI: %s", e)
     else:
-        if not new_items:
+        if not (new_items or stale_items):
             LOGGER.info("[2/4] AI пропущено — немає нових новин")
         elif not ai_enabled:
             LOGGER.info("[2/4] AI пропущено — вимкнено в налаштуваннях")
@@ -439,12 +449,21 @@ async def run():
         item.setdefault("matched_keywords", [])
 
     # ── Bot — сповіщення ─────────────────────────────────────────────────────
-    if bot_token and bot_chat_id and keywords and new_items:
+    if bot_token and bot_chat_id and keywords and new_items and notify_keywords_enabled:
         kw_new = [it for it in new_items if it.get("matched_keywords")]
         if kw_new:
             LOGGER.info("[BOT] Надсилаємо сповіщення...")
             sent = notify_keywords(kw_new, keywords, bot_token, bot_chat_id)
             LOGGER.info("[BOT] Надіслано: %s", sent)
+    if bot_token and bot_chat_id and new_items and notify_importance_enabled:
+        top_imp = [it for it in new_items if int(it.get("importance", 5) or 5) >= notify_importance_min]
+        for it in top_imp[:10]:
+            lines = [f"🔥 <b>{it.get('title', '')}</b>", f"Важливість: {it.get('importance', 5)}/10"]
+            if it.get("summary"):
+                lines.append(it["summary"])
+            if it.get("url"):
+                lines.append(f"<a href=\"{it['url']}\">Читати →</a>")
+            send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
 
     # ── Seen IDs ─────────────────────────────────────────────────────────────
     save_seen_ids(seen_ids | {it["id"] for it in all_items})
