@@ -12,7 +12,7 @@ SESSION_FILE  = "tg_session"
 LISTENER_FILE = "listener_status.json"
 LOCK_FILE     = "listener.lock"
 DB_FILE       = "newsmonitor.db"
-APP_VERSION   = "3.0"
+APP_VERSION   = "4.0"
 
 # Доступні моделі Claude
 AI_MODELS = [
@@ -59,9 +59,12 @@ DEFAULT_SETTINGS = {
     "digest_enabled":         False,
     "digest_time":            "09:00",
     "digest_count":           5,
+    "digest_mode":            "top",   # top | keywords
     # Категорії та ключові слова — порожні, налаштовуються вручну
     "categories":             [],
     "keywords":               [],
+    # UI theme
+    "theme_mode":             "auto",  # auto | light | dark
     # Security
     "web_auth_enabled":       False,
 }
