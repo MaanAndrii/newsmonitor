@@ -411,6 +411,9 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
             <div class="setting-hint" id="api-key-hint"></div>
           </div>
         </div>
+        <div class="api-debug-box" id="api-debug-box">
+          Debug API: очікуємо дані...
+        </div>
       </div>
       <div class="setting-section">
         <div class="setting-section-title">Збір новин</div>
@@ -652,6 +655,15 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
           <label for="kw-telegram" style="font-size:13px;color:#444;cursor:pointer;text-transform:none;letter-spacing:0">Відправляти в Telegram</label>
         </div>
         <button class="btn primary" onclick="addKeyword(this.closest('.add-form'))">+ Додати</button>
+      </div>
+    </div>
+
+    <div class="stab-panel" id="stab-debug">
+      <div class="setting-section">
+        <div class="setting-section-title">Debug API</div>
+        <div class="api-debug-box" id="api-debug-box">
+          Debug API: очікуємо дані...
+        </div>
       </div>
     </div>
 
@@ -1468,6 +1480,32 @@ async function loadSettings() {
       await checkTgSession();
     } catch {}
   } catch { toast('Не вдалося завантажити налаштування',true); }
+}
+
+async function loadApiDebug() {
+  const box = document.getElementById('api-debug-box');
+  if (!box || !isAdmin) return;
+  try {
+    const d = await api('/api/settings/debug');
+    const t = d.last_save_at ? fmtTime(new Date(d.last_save_at * 1000).toISOString()) : '—';
+    const stored = d.stored || {};
+    const effective = d.effective || {};
+    const payload = d.last_payload || {};
+    box.innerHTML = `
+      <div><b>Debug API-збереження</b></div>
+      <div>Останнє збереження: <b>${esc(t)}</b></div>
+      <div>Telegram API ID (stored): <b>${esc(stored.telegram_api_id || 0)}</b></div>
+      <div>Stored: Claude ключ <span class="${stored.has_anthropic_key?'ok':'bad'}">${stored.has_anthropic_key?'Є':'Немає'}</span>,
+      TG Hash <span class="${stored.has_telegram_hash?'ok':'bad'}">${stored.has_telegram_hash?'Є':'Немає'}</span>,
+      Bot Token <span class="${stored.has_bot_token?'ok':'bad'}">${stored.has_bot_token?'Є':'Немає'}</span></div>
+      <div>Effective (з урахуванням env): Claude <span class="${effective.has_anthropic_key?'ok':'bad'}">${effective.has_anthropic_key?'Є':'Немає'}</span>,
+      TG Hash <span class="${effective.has_telegram_hash?'ok':'bad'}">${effective.has_telegram_hash?'Є':'Немає'}</span>,
+      Bot Token <span class="${effective.has_bot_token?'ok':'bad'}">${effective.has_bot_token?'Є':'Немає'}</span></div>
+      <div>Останній payload (довжини): Claude=${esc(payload.anthropic_api_key_len||0)}, TG Hash=${esc(payload.telegram_api_hash_len||0)}, Bot=${esc(payload.bot_token_len||0)}</div>
+    `;
+  } catch {
+    box.textContent = 'Debug API: не вдалося отримати дані.';
+  }
 }
 
 // Категорії

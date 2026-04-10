@@ -250,13 +250,13 @@ async def run_listener():
     sources     = load_json(SOURCES_FILE,  DEFAULT_SOURCES)
 
     api_id      = int(settings.get("telegram_api_id",   0) or 0)
-    api_hash    = settings.get("telegram_api_hash", "")
+    api_hash    = ""
     ai_enabled  = bool(settings.get("ai_enabled", False))
     ai_model    = settings.get("ai_model", DEFAULT_AI_MODEL)
     api_key     = settings.get("anthropic_api_key", "")
     categories  = normalize_categories(settings.get("categories", []))
     keywords    = settings.get("keywords", [])
-    bot_token   = settings.get("bot_token", "")
+    bot_token   = ""
     bot_chat_id = settings.get("bot_chat_id", "")
     notify_keywords_enabled = bool(settings.get("notify_keywords_enabled", False))
     notify_importance_enabled = bool(settings.get("notify_importance_enabled", False))

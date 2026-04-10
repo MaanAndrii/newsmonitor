@@ -317,7 +317,7 @@ async def run():
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
-    bot_token        = settings.get("bot_token", "")
+    bot_token        = ""
     bot_chat_id      = settings.get("bot_chat_id", "")
     notify_keywords_enabled = bool(settings.get("notify_keywords_enabled", False))
     notify_importance_enabled = bool(settings.get("notify_importance_enabled", False))
