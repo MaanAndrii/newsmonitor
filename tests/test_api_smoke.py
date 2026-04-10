@@ -136,6 +136,15 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertIn("fetcher_last_success_age_sec", payload)
         self.assertIn("listener_heartbeat_age_sec", payload)
 
+    def test_debug_connections_endpoint_returns_recent_ip_events(self):
+        code, _ = self._get("/api/news")
+        self.assertEqual(code, 200)
+        code, payload = self._get("/api/debug/connections")
+        self.assertEqual(code, 200)
+        self.assertIn("users", payload)
+        self.assertIn("events", payload)
+        self.assertTrue(any(str(u.get("ip")) == "127.0.0.1" for u in payload.get("users", [])))
+
     def test_news_endpoint_returns_payload(self):
         code, payload = self._get("/api/news")
         self.assertEqual(code, 200)

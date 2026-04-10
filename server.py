@@ -57,6 +57,50 @@ _tg_auth: dict = {
 _tg_auth_lock = threading.Lock()
 _admin_sessions: dict[str, float] = {}
 SESSION_TTL_SECONDS = 60 * 60 * 12
+_conn_events: list[dict] = []
+_conn_events_lock = threading.Lock()
+_CONN_RETENTION_SECONDS = 24 * 60 * 60
+_CONN_MAX_EVENTS = 5000
+
+
+def _record_connection(ip: str, path: str, method: str) -> None:
+    now = time.time()
+    cutoff = now - _CONN_RETENTION_SECONDS
+    event = {
+        "ts": now,
+        "ip": ip,
+        "path": path,
+        "method": method,
+    }
+    with _conn_events_lock:
+        _conn_events.append(event)
+        _conn_events[:] = [e for e in _conn_events if e.get("ts", 0) >= cutoff]
+        if len(_conn_events) > _CONN_MAX_EVENTS:
+            _conn_events[:] = _conn_events[-_CONN_MAX_EVENTS:]
+
+
+def _get_recent_connections() -> dict:
+    cutoff = time.time() - _CONN_RETENTION_SECONDS
+    with _conn_events_lock:
+        events = [e for e in _conn_events if e.get("ts", 0) >= cutoff]
+    by_ip: dict[str, dict] = {}
+    for e in events:
+        ip = str(e.get("ip", "unknown"))
+        row = by_ip.get(ip)
+        if not row:
+            row = {"ip": ip, "first_seen": e["ts"], "last_seen": e["ts"], "hits": 0}
+            by_ip[ip] = row
+        row["first_seen"] = min(row["first_seen"], e["ts"])
+        row["last_seen"] = max(row["last_seen"], e["ts"])
+        row["hits"] += 1
+    users = sorted(by_ip.values(), key=lambda x: x["last_seen"], reverse=True)
+    return {
+        "window_hours": 24,
+        "total_events": len(events),
+        "total_ips": len(users),
+        "users": users,
+        "events": events[-200:],
+    }
 
 
 # ── Fetcher ───────────────────────────────────────────────────────────────────
@@ -561,6 +605,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = urlparse(self.path).path
+        _record_connection(self.client_address[0], p, "GET")
         if not self._authorized():
             public_api = {
                 "/api/news",
@@ -593,6 +638,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         admin_only = {
             "/api/settings",
             "/api/settings/debug",
+            "/api/debug/connections",
             "/api/sources",
             "/api/refresh",
             "/api/tg/session",
@@ -605,6 +651,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/sources":         lambda: self.send_json(load_sources_with_defaults()),
             "/api/settings":        self._serve_settings,
             "/api/settings/debug":  self._serve_settings_debug,
+            "/api/debug/connections": lambda: self.send_json(_get_recent_connections()),
             "/api/dashboard/config": self._serve_dashboard_config,
             "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
             "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
@@ -627,6 +674,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         p    = urlparse(self.path).path
+        _record_connection(self.client_address[0], p, "POST")
         body = self._read_body()
         if p == "/api/login":
             self._login(body)

@@ -628,6 +628,7 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
       <div class="setting-section">
         <div class="setting-section-title">Debug слухача</div>
         <div id="listener-debug-box" class="setting-hint">Очікуємо статус...</div>
+        <div style="margin-top:14px" id="connections-debug-box" class="setting-hint">Завантажуємо підключення...</div>
       </div>
     </div>
 
@@ -1723,12 +1724,27 @@ async function clearNotifications() {
 
 async function loadListenerDebug() {
   const box = document.getElementById('listener-debug-box');
+  const cbox = document.getElementById('connections-debug-box');
   if (!box) return;
   try {
     const ls = await api('/api/listener/status');
     box.textContent = `Статус: ${ls.status || 'unknown'} | Помилка: ${ls.error || 'немає'} | Updated: ${ls.updated_at || '—'}`;
   } catch {
     box.textContent = 'Не вдалося отримати статус слухача.';
+  }
+  if (!cbox) return;
+  try {
+    const d = await api('/api/debug/connections');
+    const rows = (d.users || []).slice(0, 20).map(u =>
+      `<tr><td>${esc(u.ip)}</td><td>${esc(fmtTime(new Date((u.first_seen||0)*1000).toISOString()))}</td><td>${esc(fmtTime(new Date((u.last_seen||0)*1000).toISOString()))}</td><td>${esc(u.hits||0)}</td></tr>`
+    ).join('');
+    cbox.innerHTML = `
+      <div style="margin-bottom:6px">Користувачі/підключення за останні 24 год: IP=${esc(d.total_ips||0)}, подій=${esc(d.total_events||0)}</div>
+      <table class="src-table"><thead><tr><th>IP</th><th>Перший візит</th><th>Останній візит</th><th>Хітів</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" style="color:#999">Немає даних</td></tr>'}</tbody></table>
+    `;
+  } catch {
+    cbox.textContent = 'Не вдалося отримати журнал підключень.';
   }
 }
 
