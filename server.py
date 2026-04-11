@@ -118,7 +118,7 @@ def _run_fetcher_process():
     def _do():
         try:
             result = subprocess.run(
-                [sys.executable, "fetcher.py"],
+                [sys.executable, "pipeline.py"],
                 check=False,
                 capture_output=True,
                 text=True,

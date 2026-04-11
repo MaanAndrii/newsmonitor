@@ -2,6 +2,7 @@ import unittest
 
 import fetcher
 import listener
+import notifier
 
 
 class NotificationDispatchTest(unittest.TestCase):
@@ -45,6 +46,12 @@ class NotificationDispatchTest(unittest.TestCase):
         kws = ["Львів", {"phrase": "Київ"}]
         matched = listener.match_keywords("Подія у Львів сьогодні", kws)
         self.assertIn("Львів", matched)
+
+    def test_notifier_source_rule_match(self):
+        item = {"source_id": "ABC_Channel", "matched_keywords": [], "importance": 5, "source": "s"}
+        rule = {"type": "source_hit", "params": {"source_ids": ["abc_channel"]}}
+        ok, _ = notifier._rule_matches(item, rule)
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":

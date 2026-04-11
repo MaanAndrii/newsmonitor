@@ -193,8 +193,11 @@ cd /home/<user>/newsmonitor \
 ## Структура
 
 - `server.py` — веб сервер + API + scheduler.
-- `fetcher.py` — пакетний збір новин.
-- `listener.py` — realtime Telegram listener.
+- `listener.py` — realtime Telegram listener (ingest-only у БД).
+- `ingest.py` — ingest RSS у БД.
+- `analyzer.py` — пост-обробка з БД (keywords + AI категорія/важливість).
+- `notifier.py` — моніторинг критеріїв і відправка сповіщень.
+- `pipeline.py` — оркестратор етапів ingest → analyze → notify.
 - `storage.py` — SQLite storage layer.
 - `utils.py` — retry/backoff + structured logging.
 - `index.html` — UI.
