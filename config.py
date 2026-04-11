@@ -12,7 +12,7 @@ SESSION_FILE  = "tg_session"
 LISTENER_FILE = "listener_status.json"
 LOCK_FILE     = "listener.lock"
 DB_FILE       = "newsmonitor.db"
-APP_VERSION   = "5.0Rc"
+APP_VERSION   = "4.0"
 
 # Доступні моделі Claude
 AI_MODELS = [
