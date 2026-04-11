@@ -433,57 +433,60 @@ async def run_listener():
 
         LOGGER.info("[LISTENER] [+] %s: %s...", src_name, item["title"][:70])
 
-        # Rule-based сповіщення
-        rules = STORAGE.list_notification_rules()
-        event_rules = [r for r in rules if r.get("enabled") and r.get("type") in {"keyword_hit", "importance_hit", "source_hit"}]
+        # Rule-based сповіщення (не повинно ламати прийом новин)
+        try:
+            rules = STORAGE.list_notification_rules()
+            event_rules = [r for r in rules if r.get("enabled") and r.get("type") in {"keyword_hit", "importance_hit", "source_hit"}]
 
-        matched = []
-        if keywords:
-            full_text = item["title"] + " " + item["text"]
-            matched = match_keywords(full_text, keywords)
-            item["matched_keywords"] = matched
+            matched = []
+            if keywords:
+                full_text = item["title"] + " " + item["text"]
+                matched = match_keywords(full_text, keywords)
+                item["matched_keywords"] = matched
 
-        if event_rules:
-            urgent_map = {kw["phrase"].lower(): kw.get("urgent", False) for kw in keywords}
-            sendable_map = {kw["phrase"].lower(): kw.get("to_telegram", True) for kw in keywords}
-            matched_sendable = [kw for kw in matched if sendable_map.get(kw.lower(), False)]
-            is_urgent = any(urgent_map.get(kw.lower(), False) for kw in matched)
-            norm_src_id = str(src_id).strip().lower()
-            for rule in event_rules:
-                rtype = rule.get("type")
-                target_chat_id = str(rule.get("target_chat_id", "")).strip()
-                if not target_chat_id:
-                    continue
-                params = rule.get("params", {}) if isinstance(rule.get("params"), dict) else {}
-                send_it = False
-                title = ""
-                if rtype == "keyword_hit":
-                    allowed = {str(x).strip().lower() for x in (params.get("keywords") or [])}
-                    hit = [kw for kw in matched_sendable if kw.lower() in allowed]
-                    if hit:
-                        send_it = True
-                        prefix = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
-                        title = f"{prefix}: {', '.join(hit)}"
-                elif rtype == "importance_hit":
-                    try:
-                        min_imp = int(params.get("min_importance", 8) or 8)
-                    except Exception:
-                        min_imp = 8
-                    if int(item.get("importance", 5) or 5) >= min_imp:
-                        send_it = True
-                        title = f"🔥 Важлива новина ({item.get('importance', 5)}/10)"
-                elif rtype == "source_hit":
-                    src_ids = {str(x).strip().lower() for x in (params.get("source_ids") or [])}
-                    if norm_src_id and norm_src_id in src_ids:
-                        send_it = True
-                        title = f"📡 Джерело: {src_name}"
-                if not send_it:
-                    continue
-                lines = [f"<b>{title}</b>", "", f"<b>{item['title']}</b>", item["text"][:300], f"\nДжерело: {src_name}"]
-                if item["url"]:
-                    lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
-                if bot_token:
-                    send_bot_message(bot_token, target_chat_id, "\n".join(lines))
+            if event_rules:
+                urgent_map = {kw["phrase"].lower(): kw.get("urgent", False) for kw in keywords}
+                sendable_map = {kw["phrase"].lower(): kw.get("to_telegram", True) for kw in keywords}
+                matched_sendable = [kw for kw in matched if sendable_map.get(kw.lower(), False)]
+                is_urgent = any(urgent_map.get(kw.lower(), False) for kw in matched)
+                norm_src_id = str(src_id).strip().lower()
+                for rule in event_rules:
+                    rtype = rule.get("type")
+                    target_chat_id = str(rule.get("target_chat_id", "")).strip()
+                    if not target_chat_id:
+                        continue
+                    params = rule.get("params", {}) if isinstance(rule.get("params"), dict) else {}
+                    send_it = False
+                    title = ""
+                    if rtype == "keyword_hit":
+                        allowed = {str(x).strip().lower() for x in (params.get("keywords") or [])}
+                        hit = [kw for kw in matched_sendable if kw.lower() in allowed]
+                        if hit:
+                            send_it = True
+                            prefix = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
+                            title = f"{prefix}: {', '.join(hit)}"
+                    elif rtype == "importance_hit":
+                        try:
+                            min_imp = int(params.get("min_importance", 8) or 8)
+                        except Exception:
+                            min_imp = 8
+                        if int(item.get("importance", 5) or 5) >= min_imp:
+                            send_it = True
+                            title = f"🔥 Важлива новина ({item.get('importance', 5)}/10)"
+                    elif rtype == "source_hit":
+                        src_ids = {str(x).strip().lower() for x in (params.get("source_ids") or [])}
+                        if norm_src_id and norm_src_id in src_ids:
+                            send_it = True
+                            title = f"📡 Джерело: {src_name}"
+                    if not send_it:
+                        continue
+                    lines = [f"<b>{title}</b>", "", f"<b>{item['title']}</b>", item["text"][:300], f"\nДжерело: {src_name}"]
+                    if item["url"]:
+                        lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
+                    if bot_token:
+                        send_bot_message(bot_token, target_chat_id, "\n".join(lines))
+        except Exception as e:
+            LOGGER.exception("[LISTENER] Rule-dispatch error (skip): %s", e)
 
         # AI аналіз
         if source_ai_enabled and ai_enabled and api_key and categories:
