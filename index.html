@@ -73,22 +73,20 @@ a { color: inherit; text-decoration: none; }
 .card.hi { border-left: 3px solid #e53935; border-radius: 0 10px 10px 0; }
 .card.urgent-kw { border-left: 3px solid #ef9f27; border-radius: 0 10px 10px 0; }
 .card.hi.urgent-kw { border-left: 3px solid #e53935; }
-.card.read { opacity: .45; }
 .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 7px; }
 .badges { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; flex: 1; min-width: 0; }
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
 .b-tg     { background: #e1f5ee; color: #085041; }
 .b-rss    { background: #e6f1fb; color: #0c447c; }
 .b-dup    { background: #f0f0ec; color: #888; border: 1px solid #e0e0d8; }
-.b-read   { background: #f0f0ec; color: #aaa; }
+.b-new    { background: #e8f5e9; color: #2e7d32; }
 .b-kw     { background: #fff3e0; color: #e65100; }
 .b-kw-urg { background: #fff3e0; color: #e65100; font-weight: 600; }
-.b-new    { background: #e8f5e9; color: #2e7d32; }
 .card-meta { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .card-time { font-size: 11px; color: #aaa; white-space: nowrap; }
-.dismiss-btn, .send-btn { width: 22px; height: 22px; border-radius: 5px; border: 1px solid #e5e5e0; background: #fff; cursor: pointer; color: #bbb; font-size: 13px; display: flex; align-items: center; justify-content: center; }
-.dismiss-btn:hover { background: #fde8e8; border-color: #f5c6c6; color: #e53935; }
-.card.read .dismiss-btn { color: #4caf50; border-color: #c8e6c9; }
+.send-btn { width: 22px; height: 22px; border-radius: 5px; border: 1px solid #e5e5e0; background: #fff; cursor: pointer; color: #bbb; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.preview-btn { font-size: 12px; color: #185FA5; background: transparent; border: none; cursor: pointer; }
+.preview-btn:hover { text-decoration: underline; }
 .send-btn:hover { background: #e3f2fd; border-color: #90caf9; color: #185FA5; }
 .send-btn.sent { color: #4caf50; border-color: #c8e6c9; }
 .card-title { font-size: 13px; font-weight: 600; line-height: 1.45; margin-bottom: 5px; }
@@ -210,6 +208,17 @@ a { color: inherit; text-decoration: none; }
 /* Toast */
 .toast { position: fixed; bottom: 24px; right: 24px; background: #1a1a1a; color: #fff; font-size: 13px; padding: 10px 18px; border-radius: 8px; z-index: 999; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 320px; }
 .toast.show { opacity: 1; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.42); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
+.modal-backdrop.show { display: flex; }
+.modal { background: #fff; border-radius: 12px; width: min(900px, 100%); max-height: 85vh; display: flex; flex-direction: column; border: 1px solid #e5e5e0; }
+.modal-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid #f0f0ec; }
+.modal-title { font-size: 14px; font-weight: 600; margin-right: 10px; }
+.modal-close { border: 1px solid #d0d0c8; border-radius: 6px; background: #fff; width: 28px; height: 28px; cursor: pointer; }
+.modal-body { overflow: auto; padding: 14px; }
+.modal-text { font-size: 13px; line-height: 1.7; color: #333; word-break: break-word; }
+.modal-links { padding: 0 14px 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+.modal-link { font-size: 13px; color: #185FA5; text-decoration: none; }
+.modal-link:hover { text-decoration: underline; }
 
 /* Single design mode */
 body.single-mode .card { padding: 16px 18px; }
@@ -269,13 +278,10 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
     <div class="sidebar">
       <div class="filter-group">
         <h3>Показати</h3>
-        <button class="chip on" data-f="unread">Непрочитані <span class="chip-count" id="cnt-unread">0</span></button>
-        <button class="chip" data-f="all">Всі <span class="chip-count" id="cnt-all">0</span></button>
-        <button class="chip" data-f="read">Прочитані <span class="chip-count" id="cnt-read">0</span></button>
+        <button class="chip on" data-f="all">Всі <span class="chip-count" id="cnt-all">0</span></button>
         <button class="chip" data-f="high">Важливі 8+ <span class="chip-count" id="cnt-high">0</span></button>
         <button class="chip" data-f="keywords">Ключові слова <span class="chip-count" id="cnt-kw">0</span></button>
         <div id="kw-chips"></div>
-        <button class="chip" data-f="new">Нові <span class="chip-count" id="cnt-new">0</span></button>
       </div>
       <div class="filter-group">
         <h3>Тип</h3>
@@ -290,7 +296,6 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
         <h3>Джерела</h3>
         <div id="src-list"></div>
       </div>
-      <button class="btn sm" id="clear-read-btn" style="width:100%;margin-top:4px" onclick="clearRead()">Скинути прочитані</button>
     </div>
     <div>
       <div class="listener-status-box stopped" id="listener-status-box"></div>
@@ -665,16 +670,24 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
 <div id="footer-text" style="text-align:center;font-size:12px;color:#888;padding:14px 10px 22px;">
   Створено Маринюк Андрій для онлайн-медіа "Гал-інфо". 2006 р. Всі права застережено.
 </div>
+<div id="preview-modal" class="modal-backdrop" onclick="closePreviewModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div class="modal-title" id="preview-title">Повний текст</div>
+      <button class="modal-close" onclick="closePreviewModal()">✕</button>
+    </div>
+    <div class="modal-body"><div class="modal-text" id="preview-text"></div></div>
+    <div class="modal-links" id="preview-links"></div>
+  </div>
+</div>
 
 <script>
 'use strict';
 
 // ── Стан ─────────────────────────────────────────────────────────────────────
 let allNews        = [];
-let readIds        = new Set();
-let newIds         = new Set();
 let categories     = [];
-let activeFilter   = 'unread';
+let activeFilter   = 'all';
 let pollTimer      = null;
 let bgPollTimer    = null;
 let countdownTimer = null;
@@ -756,7 +769,6 @@ function updateAdminUI() {
     settingsLink.textContent = SETTINGS_MODE ? 'Дашборд' : 'Налаштування';
     settingsLink.href = SETTINGS_MODE ? '/' : '/settings';
   }
-  document.getElementById('clear-read-btn').style.display = isAdmin ? '' : 'none';
   const authBtn = document.getElementById('auth-btn');
   authBtn.style.display = '';
   authBtn.textContent = isAdmin ? 'Вийти' : 'Увійти';
@@ -768,6 +780,7 @@ async function toggleAuth() {
       isAdmin = false;
       updateAdminUI();
       toast('Вихід виконано');
+      if (SETTINGS_MODE) window.location.href = '/';
       return;
     }
     const username = prompt('Логін адміністратора:');
@@ -903,22 +916,17 @@ function getCatInfo(id) {
 
 function filterNews() {
   return allNews.filter(n => {
-    const isRead = readIds.has(n.id);
-    const isNew  = newIds.has(n.id);
     if (activeFilter.startsWith('src:')) return n.source_id === activeFilter.slice(4);
     if (activeFilter.startsWith('kw:')) {
       const fkw = activeFilter.slice(3);
       return (n.matched_keywords || []).some(kw => kw.toLowerCase() === fkw);
     }
     switch(activeFilter) {
-      case 'unread':   return !isRead;
-      case 'read':     return isRead;
       case 'all':      return true;
       case 'high':     return n.importance >= 8;
       case 'telegram': return n.type === 'telegram';
       case 'rss':      return n.type === 'rss';
       case 'keywords': return n.matched_keywords && n.matched_keywords.length > 0;
-      case 'new':      return isNew;
       default:         return n.category === activeFilter;
     }
   });
@@ -933,8 +941,6 @@ function renderList() {
   }
   const frag = document.createDocumentFragment();
   filtered.forEach(n => {
-    const isRead   = readIds.has(n.id);
-    const isNew    = newIds.has(n.id);
     const cat      = getCatInfo(n.category);
     const hasKw    = n.matched_keywords && n.matched_keywords.length > 0;
     const urgentKw = hasKw && n.matched_keywords.some(kw => kwUrgentMap[kw.toLowerCase()]);
@@ -944,8 +950,8 @@ function renderList() {
     const cls = ['card'];
     if (n.importance >= 8) cls.push('hi');
     else if (urgentKw) cls.push('urgent-kw');
-    if (isRead) cls.push('read');
     card.className = cls.join(' ');
+    const fullText = String(n.text || n.summary || '').trim();
 
     const kwBadges = hasKw ? n.matched_keywords.map(kw => {
       const u = kwUrgentMap[kw.toLowerCase()];
@@ -963,14 +969,11 @@ function renderList() {
           <span style="font-size:12px;color:#888">${esc(n.source)}</span>
           ${catBadge}
           ${n.is_duplicate?'<span class="badge b-dup">Дублікат</span>':''}
-          ${isNew?'<span class="badge b-new">Нова</span>':''}
-          ${isRead?'<span class="badge b-read">Прочитано</span>':''}
           ${kwBadges}
         </div>
         <div class="card-meta">
           <span class="card-time">${fmtTime(n.time)}</span>
           ${isAdmin && hasBotToken?`<button class="send-btn" title="Надіслати в Telegram">✈</button>`:''}
-          ${isAdmin?`<button class="dismiss-btn" title="${isRead?'Відновити':'Прочитано'}">${isRead?'↩':'✓'}</button>`:''}
         </div>
       </div>
       <div class="card-title">${esc(n.title)}</div>
@@ -980,10 +983,14 @@ function renderList() {
           <div class="imp-dots">${impDots(n.importance)}</div>
           <span class="imp-num" style="color:${aiScoreColor(n)}">${n.importance}/10</span>
         </div>
-        ${n.url?`<a class="read-link" href="${esc(n.url)}" target="_blank" rel="noopener">Читати →</a>`:''}
+        <div style="display:flex;align-items:center;gap:12px">
+          ${fullText?`<button class="preview-btn" type="button">Повний текст</button>`:''}
+          ${n.url?`<a class="read-link" href="${esc(n.url)}" target="_blank" rel="noopener">Читати →</a>`:''}
+        </div>
       </div>`;
 
-    if (isAdmin) card.querySelector('.dismiss-btn').addEventListener('click', () => toggleRead(n.id, isRead));
+    const previewBtn = card.querySelector('.preview-btn');
+    if (previewBtn) previewBtn.addEventListener('click', () => openPreviewModal(n));
     if (isAdmin && hasBotToken) {
       card.querySelector('.send-btn').addEventListener('click', function() { sendNews(n.id, this); });
     }
@@ -995,8 +1002,6 @@ function renderList() {
 
 function updateCounts() {
   const total   = allNews.length;
-  const readCnt = allNews.filter(n => readIds.has(n.id)).length;
-  const newCnt  = allNews.filter(n => newIds.has(n.id)).length;
   const high    = allNews.filter(n => n.importance >= 8).length;
   const kwCnt   = allNews.filter(n => n.matched_keywords && n.matched_keywords.length).length;
 
@@ -1004,11 +1009,8 @@ function updateCounts() {
   document.getElementById('s-hi-kw').textContent  = `${high} / ${kwCnt}`;
 
   document.getElementById('cnt-all').textContent    = total;
-  document.getElementById('cnt-unread').textContent = total - readCnt;
-  document.getElementById('cnt-read').textContent   = readCnt;
   document.getElementById('cnt-high').textContent   = high;
   document.getElementById('cnt-kw').textContent     = kwCnt;
-  document.getElementById('cnt-new').textContent    = newCnt;
   document.getElementById('cnt-tg').textContent     = allNews.filter(n=>n.type==='telegram').length;
   document.getElementById('cnt-rss').textContent    = allNews.filter(n=>n.type==='rss').length;
 }
@@ -1049,8 +1051,6 @@ async function loadNews(force=false) {
     }
     lastNewsUpdatedAt = data.updated_at || null;
     allNews = data.items || [];
-    const newCount = data.new_count || 0;
-    newIds = new Set(allNews.slice(0, newCount).map(n => n.id));
     updateCounts();
     renderSidebarSrc();
     renderKeywordChips();
@@ -1062,38 +1062,27 @@ async function loadNews(force=false) {
   }
 }
 
-// ── Прочитані ─────────────────────────────────────────────────────────────────
-async function toggleRead(id, currentlyRead) {
-  try {
-    await api(currentlyRead ? '/api/news/unread' : '/api/news/read',
-      {method:'POST', body:JSON.stringify({id})});
-    if (currentlyRead) readIds.delete(id);
-    else               readIds.add(id);
-    updateCounts();
-    if (activeFilter === 'unread' || activeFilter === 'read') {
-      renderList();
-    } else {
-      const card = document.getElementById('card-' + id);
-      if (!card) return;
-      currentlyRead ? card.classList.remove('read') : card.classList.add('read');
-      const btn = card.querySelector('.dismiss-btn');
-      if (btn) { btn.textContent = currentlyRead?'✓':'↩'; btn.title = currentlyRead?'Прочитано':'Відновити'; }
-      const rb = card.querySelector('.b-read');
-      if (currentlyRead && rb) rb.remove();
-      else if (!currentlyRead) {
-        const b = document.createElement('span');
-        b.className='badge b-read'; b.textContent='Прочитано';
-        card.querySelector('.badges').appendChild(b);
-      }
-    }
-  } catch { toast('Помилка збереження', true); }
+// ── Попап повного тексту ───────────────────────────────────────────────────────
+function openPreviewModal(item) {
+  const modal = document.getElementById('preview-modal');
+  if (!modal) return;
+  document.getElementById('preview-title').textContent = item.title || 'Повний текст';
+  const text = String(item.text || item.summary || 'Текст відсутній');
+  document.getElementById('preview-text').innerHTML = esc(text).replace(/\n/g, '<br>');
+  const links = [];
+  if (item.url) links.push(`<a class="modal-link" href="${esc(item.url)}" target="_blank" rel="noopener">Перейти до джерела →</a>`);
+  const tgSource = String(item.source_id || '').replace('@', '');
+  if (item.type === 'telegram' && /^[A-Za-z0-9_]{3,}$/.test(tgSource)) {
+    links.push(`<a class="modal-link" href="https://t.me/${esc(tgSource)}" target="_blank" rel="noopener">Відкрити в Telegram →</a>`);
+  }
+  document.getElementById('preview-links').innerHTML = links.join('');
+  modal.classList.add('show');
 }
 
-async function clearRead() {
-  if (!isAdmin) { toast('Потрібні права адміністратора', true); return; }
-  if (!confirm('Скинути всі прочитані?')) return;
-  const d = await api('/api/news/clear_read', {method:'POST', body:'{}'});
-  if (d.ok) { readIds.clear(); updateCounts(); renderList(); toast('Прочитані скинуто'); }
+function closePreviewModal(e) {
+  if (e && e.target && e.target.closest && e.target.closest('.modal')) return;
+  const modal = document.getElementById('preview-modal');
+  if (modal) modal.classList.remove('show');
 }
 
 async function sendNews(id, btn) {
@@ -1296,6 +1285,10 @@ async function addSource(type,form) {
 }
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closePreviewModal();
+    return;
+  }
   if (e.key!=='Enter') return;
   const form=e.target.closest('.add-form');
   if (!form) return;
