@@ -145,6 +145,31 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertIn("events", payload)
         self.assertTrue(any(str(u.get("ip")) == "127.0.0.1" for u in payload.get("users", [])))
 
+    def test_notification_rules_crud(self):
+        code, payload = self._get("/api/notifications/rules")
+        self.assertEqual(code, 200)
+        self.assertEqual(payload.get("rules"), [])
+
+        create = {
+            "type": "importance_hit",
+            "target_chat_id": "-100123",
+            "params": {"min_importance": 9},
+            "enabled": True,
+        }
+        code, payload = self._post("/api/notifications/rules/create", create)
+        self.assertEqual(code, 200)
+        self.assertTrue(payload.get("ok"))
+        rid = payload.get("rule", {}).get("id")
+        self.assertTrue(rid)
+
+        code, payload = self._get("/api/notifications/rules")
+        self.assertEqual(code, 200)
+        self.assertTrue(any(r.get("id") == rid for r in payload.get("rules", [])))
+
+        code, payload = self._post("/api/notifications/rules/delete", {"id": rid})
+        self.assertEqual(code, 200)
+        self.assertTrue(payload.get("ok"))
+
     def test_news_endpoint_returns_payload(self):
         code, payload = self._get("/api/news")
         self.assertEqual(code, 200)

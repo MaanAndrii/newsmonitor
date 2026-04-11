@@ -45,6 +45,7 @@ _fetcher_status = {
 
 _auto_timer:   threading.Timer | None = None
 _digest_timer: threading.Timer | None = None
+_notification_timer: threading.Timer | None = None
 
 # ── Стан авторизації Telegram ─────────────────────────────────────────────────
 # Тримаємо TelegramClient між кроками send_code → sign_in
@@ -199,6 +200,43 @@ def _digest_tick(digest_time: str):
                      str(s.get("digest_mode", "top")),
                      s.get("keywords", []))
     _schedule_digest(digest_time, True)
+
+
+def _schedule_notifications_poll():
+    global _notification_timer
+    if _notification_timer:
+        _notification_timer.cancel()
+    _notification_timer = threading.Timer(60, _notifications_poll_tick)
+    _notification_timer.daemon = True
+    _notification_timer.start()
+
+
+def _notifications_poll_tick():
+    try:
+        now = time.localtime()
+        hhmm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
+        for rule in STORAGE.list_notification_rules():
+            if not rule.get("enabled"):
+                continue
+            if rule.get("type") != "digest_summary":
+                continue
+            if str(rule.get("schedule_time", "")) != hhmm:
+                continue
+            s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
+            bot_token = s.get("bot_token", "")
+            chat_id = str(rule.get("target_chat_id", "")).strip()
+            if not bot_token or not chat_id:
+                continue
+            params = rule.get("params", {}) if isinstance(rule.get("params"), dict) else {}
+            count = max(1, int(params.get("count", 5) or 5))
+            mode = str(params.get("mode", "top"))
+            _send_digest(bot_token, chat_id, count, mode, s.get("keywords", []))
+            rule["last_sent_at"] = time.time()
+            STORAGE.upsert_notification_rule(rule)
+    except Exception:
+        LOGGER.exception("[NOTIFY] poll error")
+    finally:
+        _schedule_notifications_poll()
 
 
 def _send_digest(bot_token: str, chat_id: str, count: int, mode: str = "top", keywords: list | None = None):
@@ -614,6 +652,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "/api/listener/status",
                 "/api/dashboard/config",
                 "/api/me",
+                "/api/notifications/rules",
             }
             if p == "/api/me":
                 self.send_json({"admin": False})
@@ -628,6 +667,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "/api/health":          self._serve_health,
                     "/api/listener/status": lambda: self.send_json(get_listener_status()),
                     "/api/dashboard/config": self._serve_dashboard_config,
+                    "/api/notifications/rules": lambda: self.send_json({"rules": []}),
                 }
                 if p in routes:
                     routes[p]()
@@ -639,6 +679,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/settings",
             "/api/settings/debug",
             "/api/debug/connections",
+            "/api/notifications/rules",
             "/api/sources",
             "/api/refresh",
             "/api/tg/session",
@@ -652,6 +693,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/settings":        self._serve_settings,
             "/api/settings/debug":  self._serve_settings_debug,
             "/api/debug/connections": lambda: self.send_json(_get_recent_connections()),
+            "/api/notifications/rules": lambda: self.send_json({"rules": STORAGE.list_notification_rules()}),
             "/api/dashboard/config": self._serve_dashboard_config,
             "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
             "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
@@ -696,6 +738,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/sign_in",
             "/api/tg/logout",
             "/api/notifications/clear",
+            "/api/notifications/rules/create",
+            "/api/notifications/rules/update",
+            "/api/notifications/rules/delete",
         }
         if p in admin_only and not self._require_admin():
             return
@@ -713,6 +758,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
             "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
             "/api/notifications/clear": self._clear_notifications,
+            "/api/notifications/rules/create": lambda: self._create_notification_rule(body),
+            "/api/notifications/rules/update": lambda: self._update_notification_rule(body),
+            "/api/notifications/rules/delete": lambda: self._delete_notification_rule(body),
             "/api/logout":           self._logout,
         }
         if p in routes:
@@ -1068,6 +1116,53 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         settings["digest_time"] = "09:00"
         write_json(SETTINGS_FILE, settings)
         _schedule_digest(settings.get("digest_time", "09:00"), False)
+        STORAGE.clear_notification_rules()
+        self.send_json({"ok": True})
+
+    def _create_notification_rule(self, body: dict):
+        rule_id = secrets.token_hex(8)
+        rule_type = str(body.get("type", "")).strip()
+        target_chat_id = str(body.get("target_chat_id", "")).strip()
+        if rule_type not in {"digest_summary", "keyword_hit", "importance_hit", "source_hit"}:
+            self.send_json({"ok": False, "error": "invalid_type"}, 400)
+            return
+        if not target_chat_id:
+            self.send_json({"ok": False, "error": "target_required"}, 400)
+            return
+        rule = {
+            "id": rule_id,
+            "enabled": bool(body.get("enabled", True)),
+            "type": rule_type,
+            "target_chat_id": target_chat_id,
+            "schedule_time": str(body.get("schedule_time", "")),
+            "params": body.get("params", {}) if isinstance(body.get("params", {}), dict) else {},
+            "last_sent_at": None,
+            "created_at": time.time(),
+        }
+        STORAGE.upsert_notification_rule(rule)
+        self.send_json({"ok": True, "rule": rule})
+
+    def _update_notification_rule(self, body: dict):
+        rule_id = str(body.get("id", "")).strip()
+        if not rule_id:
+            self.send_json({"ok": False, "error": "id_required"}, 400)
+            return
+        existing = next((r for r in STORAGE.list_notification_rules() if r.get("id") == rule_id), None)
+        if not existing:
+            self.send_json({"ok": False, "error": "not_found"}, 404)
+            return
+        for key in ("enabled", "type", "target_chat_id", "schedule_time", "params"):
+            if key in body:
+                existing[key] = body[key]
+        STORAGE.upsert_notification_rule(existing)
+        self.send_json({"ok": True, "rule": existing})
+
+    def _delete_notification_rule(self, body: dict):
+        rule_id = str(body.get("id", "")).strip()
+        if not rule_id:
+            self.send_json({"ok": False, "error": "id_required"}, 400)
+            return
+        STORAGE.delete_notification_rule(rule_id)
         self.send_json({"ok": True})
 
     def _send_news(self, body: dict):
@@ -1153,6 +1248,7 @@ if __name__ == "__main__":
 
     if settings.get("digest_enabled"):
         _schedule_digest(settings.get("digest_time", "09:00"), True)
+    _schedule_notifications_poll()
 
     LOGGER.info("Сервер: http://localhost:%s", PORT)
     LOGGER.info("Ctrl+C — зупинити")

@@ -256,11 +256,7 @@ async def run_listener():
     api_key     = settings.get("anthropic_api_key", "")
     categories  = normalize_categories(settings.get("categories", []))
     keywords    = settings.get("keywords", [])
-    bot_token   = ""
-    bot_chat_id = settings.get("bot_chat_id", "")
-    notify_keywords_enabled = bool(settings.get("notify_keywords_enabled", False))
-    notify_importance_enabled = bool(settings.get("notify_importance_enabled", False))
-    notify_importance_min = max(1, int(settings.get("notify_importance_min", 8) or 8))
+    bot_token   = settings.get("bot_token", "")
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
     max_items   = max(10, int(settings.get("max_items", 500)))
@@ -416,31 +412,54 @@ async def run_listener():
 
         LOGGER.info("[LISTENER] [+] %s: %s...", src_name, item["title"][:70])
 
+        # Rule-based сповіщення
+        rules = STORAGE.list_notification_rules()
+        event_rules = [r for r in rules if r.get("enabled") and r.get("type") in {"keyword_hit", "importance_hit", "source_hit"}]
+
         # Ключові слова
         if keywords:
             full_text = item["title"] + " " + item["text"]
             matched   = match_keywords(full_text, keywords)
             item["matched_keywords"] = matched
-            if matched:
+            if matched and event_rules:
                 urgent_map = {kw["phrase"].lower(): kw.get("urgent", False)
                               for kw in keywords}
                 sendable_map = {kw["phrase"].lower(): kw.get("to_telegram", True)
                                 for kw in keywords}
                 matched_sendable = [kw for kw in matched if sendable_map.get(kw.lower(), False)]
                 is_urgent  = any(urgent_map.get(kw.lower(), False) for kw in matched)
-                prefix     = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
-                kw_str     = ", ".join(matched_sendable or matched)
-                lines = [
-                    f"{prefix}: <i>{kw_str}</i>", "",
-                    f"<b>{item['title']}</b>",
-                    item["text"][:300],
-                    f"\nДжерело: {src_name}",
-                ]
-                if item["url"]:
-                    lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
-                if bot_token and bot_chat_id and matched_sendable and notify_keywords_enabled:
-                    send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
-                    LOGGER.info("[LISTENER][BOT] %s", kw_str)
+                for rule in event_rules:
+                    rtype = rule.get("type")
+                    target_chat_id = str(rule.get("target_chat_id", "")).strip()
+                    if not target_chat_id:
+                        continue
+                    params = rule.get("params", {}) if isinstance(rule.get("params"), dict) else {}
+                    send_it = False
+                    title = ""
+                    if rtype == "keyword_hit":
+                        allowed = {str(x).lower() for x in (params.get("keywords") or [])}
+                        hit = [kw for kw in matched_sendable if kw.lower() in allowed]
+                        if hit:
+                            send_it = True
+                            prefix = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
+                            title = f"{prefix}: {', '.join(hit)}"
+                    elif rtype == "importance_hit":
+                        min_imp = int(params.get("min_importance", 8) or 8)
+                        if int(item.get("importance", 5) or 5) >= min_imp:
+                            send_it = True
+                            title = f"🔥 Важлива новина ({item.get('importance', 5)}/10)"
+                    elif rtype == "source_hit":
+                        src_ids = {str(x) for x in (params.get("source_ids") or [])}
+                        if src_id in src_ids:
+                            send_it = True
+                            title = f"📡 Джерело: {src_name}"
+                    if not send_it:
+                        continue
+                    lines = [f"<b>{title}</b>", "", f"<b>{item['title']}</b>", item["text"][:300], f"\nДжерело: {src_name}"]
+                    if item["url"]:
+                        lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
+                    if bot_token:
+                        send_bot_message(bot_token, target_chat_id, "\n".join(lines))
 
         # AI аналіз
         if source_ai_enabled and ai_enabled and api_key and categories:
@@ -455,14 +474,6 @@ async def run_listener():
                 LOGGER.info("[LISTENER][AI] %s | %s/10", item["category"], item["importance"])
             except Exception as e:
                 LOGGER.warning("[LISTENER][AI] Помилка: %s", e)
-
-        if bot_token and bot_chat_id and notify_importance_enabled and int(item.get("importance", 5) or 5) >= notify_importance_min:
-            lines = [f"🔥 <b>{item.get('title', '')}</b>", f"Важливість: {item.get('importance', 5)}/10"]
-            if item.get("summary"):
-                lines.append(item["summary"])
-            if item.get("url"):
-                lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
-            send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
 
         # Зберігаємо
         fresh = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)

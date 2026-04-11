@@ -156,6 +156,53 @@ def notify_keywords(new_items: list, keywords: list,
     return sent
 
 
+def notify_by_rules(new_items: list, rules: list, bot_token: str) -> int:
+    if not bot_token or not new_items or not rules:
+        return 0
+    sent = 0
+    for item in new_items:
+        item_keywords = {str(x).lower() for x in (item.get("matched_keywords") or [])}
+        item_importance = int(item.get("importance", 5) or 5)
+        item_source = str(item.get("source_id", ""))
+        for rule in rules:
+            if not rule.get("enabled"):
+                continue
+            rtype = str(rule.get("type", ""))
+            chat_id = str(rule.get("target_chat_id", "")).strip()
+            if not chat_id:
+                continue
+            params = rule.get("params", {}) if isinstance(rule.get("params"), dict) else {}
+            allow = False
+            title = ""
+            if rtype == "keyword_hit":
+                kws = {str(x).lower() for x in (params.get("keywords") or [])}
+                hit = sorted(item_keywords & kws)
+                if hit:
+                    allow = True
+                    title = f"🔔 Ключові слова: {', '.join(hit)}"
+            elif rtype == "importance_hit":
+                min_imp = int(params.get("min_importance", 8) or 8)
+                if item_importance >= min_imp:
+                    allow = True
+                    title = f"🔥 Важлива новина ({item_importance}/10)"
+            elif rtype == "source_hit":
+                src_ids = {str(x) for x in (params.get("source_ids") or [])}
+                if item_source and item_source in src_ids:
+                    allow = True
+                    title = f"📡 Джерело: {item.get('source', '')}"
+            if not allow:
+                continue
+            lines = [f"<b>{title}</b>", "", f"<b>{item.get('title','')}</b>"]
+            if item.get("summary"):
+                lines.append(item["summary"])
+            lines.append(f"\nДжерело: {item.get('source', '')} | {item_importance}/10")
+            if item.get("url"):
+                lines.append(f"<a href=\"{item['url']}\">Читати →</a>")
+            if send_bot_message(bot_token, chat_id, "\n".join(lines)):
+                sent += 1
+    return sent
+
+
 # ── AI аналіз ────────────────────────────────────────────────────────────────
 
 def analyze_batch(items: list, api_key: str, categories: list,
@@ -317,11 +364,7 @@ async def run():
     keywords         = settings.get("keywords", [])
     keep_days        = max(1, int(settings.get("keep_days", 14)))
     max_items        = max(10, int(settings.get("max_items", 500)))
-    bot_token        = ""
-    bot_chat_id      = settings.get("bot_chat_id", "")
-    notify_keywords_enabled = bool(settings.get("notify_keywords_enabled", False))
-    notify_importance_enabled = bool(settings.get("notify_importance_enabled", False))
-    notify_importance_min = max(1, int(settings.get("notify_importance_min", 8) or 8))
+    bot_token        = settings.get("bot_token", "")
     priorities       = settings.get("importance_priorities", "")
     api_key          = (
         env_secret("NEWSMONITOR_ANTHROPIC_API_KEY")
@@ -448,22 +491,13 @@ async def run():
         item.setdefault("is_duplicate", False)
         item.setdefault("matched_keywords", [])
 
-    # ── Bot — сповіщення ─────────────────────────────────────────────────────
-    if bot_token and bot_chat_id and keywords and new_items and notify_keywords_enabled:
-        kw_new = [it for it in new_items if it.get("matched_keywords")]
-        if kw_new:
-            LOGGER.info("[BOT] Надсилаємо сповіщення...")
-            sent = notify_keywords(kw_new, keywords, bot_token, bot_chat_id)
-            LOGGER.info("[BOT] Надіслано: %s", sent)
-    if bot_token and bot_chat_id and new_items and notify_importance_enabled:
-        top_imp = [it for it in new_items if int(it.get("importance", 5) or 5) >= notify_importance_min]
-        for it in top_imp[:10]:
-            lines = [f"🔥 <b>{it.get('title', '')}</b>", f"Важливість: {it.get('importance', 5)}/10"]
-            if it.get("summary"):
-                lines.append(it["summary"])
-            if it.get("url"):
-                lines.append(f"<a href=\"{it['url']}\">Читати →</a>")
-            send_bot_message(bot_token, bot_chat_id, "\n".join(lines))
+    # ── Bot — rule-based сповіщення ──────────────────────────────────────────
+    rules = STORAGE.list_notification_rules()
+    event_rules = [r for r in rules if r.get("type") in {"keyword_hit", "importance_hit", "source_hit"}]
+    if new_items and event_rules:
+        sent = notify_by_rules(new_items, event_rules, bot_token)
+        if sent:
+            LOGGER.info("[BOT] Rule-based надіслано: %s", sent)
 
     # ── Seen IDs ─────────────────────────────────────────────────────────────
     save_seen_ids(seen_ids | {it["id"] for it in all_items})

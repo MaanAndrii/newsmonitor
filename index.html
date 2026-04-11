@@ -552,56 +552,29 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
         </div>
       </div>
       <div class="setting-section">
-        <div style="margin-bottom:14px">
-          <div class="setting-toggle-row">
-            <div>
-              <div class="setting-toggle-label">Сповіщення за розкладом</div>
-              <div class="setting-toggle-desc">Відправка за часом: топ або за ключовими словами</div>
-            </div>
-            <button class="big-toggle off" id="digest-toggle"
-              onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
-          </div>
-        </div>
-        <div class="settings-grid">
-          <div class="setting-row">
-            <label>Режим відправки</label>
-            <select id="set-digest-mode">
-              <option value="top">X топ-новин у вибраний час</option>
-              <option value="keywords">Лише новини за ключовими словами</option>
-            </select>
-          </div>
-          <div class="setting-row">
-            <label>Час відправки</label>
-            <input type="time" id="set-digest-time" value="09:00">
-          </div>
-          <div class="setting-row">
-            <label>Кількість новин у дайджесті</label>
-            <input type="number" id="set-digest-count" min="1" max="20" value="5">
-          </div>
-        </div>
-        <div class="setting-toggle-row" style="margin-top:14px">
-          <div>
-            <div class="setting-toggle-label">Сповіщення за ключовими словами (миттєво)</div>
-          </div>
-          <button class="big-toggle off" id="notify-keywords-toggle"
-            onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
-        </div>
-        <div class="setting-toggle-row" style="margin-top:12px">
-          <div>
-            <div class="setting-toggle-label">Сповіщення за важливістю (миттєво)</div>
-          </div>
-          <button class="big-toggle off" id="notify-importance-toggle"
-            onclick="this.className='big-toggle '+(this.classList.contains('on')?'off':'on')"></button>
-        </div>
-        <div class="settings-grid" style="margin-top:10px">
-          <div class="setting-row">
-            <label>Поріг важливості</label>
-            <input type="number" id="set-notify-importance-min" min="1" max="10" value="8">
-          </div>
-        </div>
+        <div class="setting-section-title">Активні правила сповіщень</div>
+        <table class="src-table">
+          <thead><tr><th>Тип</th><th>Кому (Chat ID)</th><th>Параметри</th><th>Статус</th><th style="width:44px"></th></tr></thead>
+          <tbody id="rules-tbody"></tbody>
+        </table>
         <div style="margin-top:10px">
           <button class="btn danger sm" onclick="clearNotifications()">Очистити всі запрограмовані сповіщення</button>
         </div>
+      </div>
+      <div class="add-form" id="rule-form">
+        <div class="field">
+          <label>Тип</label>
+          <select class="rule-type">
+            <option value="digest_summary">Огляд за розкладом</option>
+            <option value="keyword_hit">Ключове слово</option>
+            <option value="importance_hit">Важлива новина</option>
+            <option value="source_hit">Джерело</option>
+          </select>
+        </div>
+        <div class="field"><label>Chat ID</label><input type="text" class="rule-chat" placeholder="-100..."></div>
+        <div class="field"><label>Час (для огляду)</label><input type="time" class="rule-time" value="09:00"></div>
+        <div class="field"><label>Параметр</label><input type="text" class="rule-param" placeholder="count=5 | keywords=слово1,слово2 | min=8 | sources=id1,id2"></div>
+        <button class="btn primary" onclick="createRule(this.closest('.add-form'))">+ Додати правило</button>
       </div>
     </div>
 
@@ -702,6 +675,7 @@ let settingsCache  = {};
 const KEY_MASK = '**********';
 let clockTimer = null;
 const sourceSortMode = { rss: 'name', telegram: 'name' };
+let notificationRules = [];
 
 // ── Утиліти ───────────────────────────────────────────────────────────────────
 function esc(s) {
@@ -817,6 +791,7 @@ document.querySelectorAll('.stab').forEach(t => t.addEventListener('click', () =
   if (t.dataset.stab === 'sources') loadSources();
   if (t.dataset.stab === 'telegram-auth') checkTgSession();
   if (t.dataset.stab === 'debug') loadListenerDebug();
+  if (t.dataset.stab === 'bot') loadNotificationRules();
 }));
 
 document.querySelectorAll('.chip[data-f]').forEach(c => c.addEventListener('click', () => {
@@ -1434,15 +1409,8 @@ async function loadSettings() {
     document.getElementById('set-max-items').value     = d.max_items||500;
     document.getElementById('set-tg-id').value         = d.telegram_api_id||'';
     document.getElementById('set-bot-chat-id').value   = d.bot_chat_id||'';
-    document.getElementById('digest-toggle').className = 'big-toggle '+(d.digest_enabled?'on':'off');
-    document.getElementById('set-digest-mode').value   = d.digest_mode||'top';
-    document.getElementById('set-digest-time').value   = d.digest_time||'09:00';
-    document.getElementById('set-digest-count').value  = d.digest_count||5;
     document.getElementById('set-theme-mode').value    = d.theme_mode||'auto';
     document.getElementById('set-footer-text').value   = d.footer_text||'';
-    document.getElementById('notify-keywords-toggle').className = 'big-toggle '+(d.notify_keywords_enabled?'on':'off');
-    document.getElementById('notify-importance-toggle').className = 'big-toggle '+(d.notify_importance_enabled?'on':'off');
-    document.getElementById('set-notify-importance-min').value = d.notify_importance_min||8;
     applyTheme(d.theme_mode||'auto');
 
     const listenerOn = d.listener_enabled||false;
@@ -1478,6 +1446,9 @@ async function loadSettings() {
     } catch {}
     try {
       await checkTgSession();
+    } catch {}
+    try {
+      await loadNotificationRules();
     } catch {}
   } catch { toast('Не вдалося завантажити налаштування',true); }
 }
@@ -1606,15 +1577,8 @@ async function saveSettings() {
     max_items:             parseInt(document.getElementById('set-max-items').value)||500,
     telegram_api_id:       parseInt(document.getElementById('set-tg-id').value)||0,
     bot_chat_id:           document.getElementById('set-bot-chat-id').value.trim(),
-    digest_enabled:        document.getElementById('digest-toggle').classList.contains('on'),
-    digest_mode:           document.getElementById('set-digest-mode').value,
-    digest_time:           document.getElementById('set-digest-time').value,
-    digest_count:          parseInt(document.getElementById('set-digest-count').value)||5,
     theme_mode:            document.getElementById('set-theme-mode').value,
     footer_text:           document.getElementById('set-footer-text').value.trim(),
-    notify_keywords_enabled: document.getElementById('notify-keywords-toggle').classList.contains('on'),
-    notify_importance_enabled: document.getElementById('notify-importance-toggle').classList.contains('on'),
-    notify_importance_min: parseInt(document.getElementById('set-notify-importance-min').value)||8,
     listener_enabled:      document.getElementById('listener-toggle').classList.contains('on'),
     categories:            settingsCache.categories||[],
     keywords:              settingsCache.keywords||[],
@@ -1716,10 +1680,86 @@ async function clearNotifications() {
   const d = await api('/api/notifications/clear', {method:'POST', body:'{}'});
   if (d.ok) {
     toast('Сповіщення очищено');
-    await loadSettings();
+    await loadNotificationRules();
   } else {
     toast(d.error || 'Помилка', true);
   }
+}
+
+function ruleTypeLabel(t) {
+  return ({
+    digest_summary: 'Огляд за розкладом',
+    keyword_hit: 'Ключове слово',
+    importance_hit: 'Важливість',
+    source_hit: 'Джерело',
+  })[t] || t;
+}
+
+function renderRulesTable(rules) {
+  const tbody = document.getElementById('rules-tbody');
+  if (!tbody) return;
+  if (!rules.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#999;padding:16px">Немає активних правил</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = '';
+  rules.forEach(r => {
+    const tr = document.createElement('tr');
+    const params = r.params || {};
+    let txt = '';
+    if (r.type === 'digest_summary') txt = `час=${r.schedule_time||'--'}, count=${params.count||5}, mode=${params.mode||'top'}`;
+    if (r.type === 'keyword_hit') txt = `keywords=${(params.keywords||[]).join(', ')}`;
+    if (r.type === 'importance_hit') txt = `min=${params.min_importance||8}`;
+    if (r.type === 'source_hit') txt = `sources=${(params.source_ids||[]).join(', ')}`;
+    tr.innerHTML = `<td>${esc(ruleTypeLabel(r.type))}</td><td>${esc(r.target_chat_id||'')}</td><td>${esc(txt)}</td><td>${r.enabled?'<span class="badge b-new">Активне</span>':'<span class="badge b-dup">Вимкнено</span>'}</td><td><button class="del-btn">✕</button></td>`;
+    tr.querySelector('.del-btn').addEventListener('click', () => deleteRule(r.id));
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadNotificationRules() {
+  if (!isAdmin) return;
+  const d = await api('/api/notifications/rules');
+  notificationRules = d.rules || [];
+  renderRulesTable(notificationRules);
+}
+
+async function deleteRule(id) {
+  const d = await api('/api/notifications/rules/delete', {method:'POST', body: JSON.stringify({id})});
+  if (d.ok) {
+    toast('Правило видалено');
+    loadNotificationRules();
+  } else toast(d.error||'Помилка', true);
+}
+
+async function createRule(form) {
+  const type = form.querySelector('.rule-type').value;
+  const target_chat_id = form.querySelector('.rule-chat').value.trim();
+  const schedule_time = form.querySelector('.rule-time').value;
+  const paramRaw = form.querySelector('.rule-param').value.trim();
+  if (!target_chat_id) { toast('Вкажіть Chat ID', true); return; }
+  const params = {};
+  if (type === 'digest_summary') {
+    const m = /count=(\d+)/i.exec(paramRaw); params.count = m ? parseInt(m[1], 10) : 5;
+    params.mode = /mode=keywords/i.test(paramRaw) ? 'keywords' : 'top';
+  } else if (type === 'keyword_hit') {
+    const kv = paramRaw.replace(/^keywords=/i, '');
+    params.keywords = kv.split(',').map(x => x.trim()).filter(Boolean);
+  } else if (type === 'importance_hit') {
+    const m = /min=(\d+)/i.exec(paramRaw); params.min_importance = m ? parseInt(m[1], 10) : 8;
+  } else if (type === 'source_hit') {
+    const sv = paramRaw.replace(/^sources=/i, '');
+    params.source_ids = sv.split(',').map(x => x.trim()).filter(Boolean);
+  }
+  const d = await api('/api/notifications/rules/create', {
+    method: 'POST',
+    body: JSON.stringify({type, target_chat_id, schedule_time, params, enabled: true}),
+  });
+  if (d.ok) {
+    toast('Правило додано');
+    form.querySelector('.rule-param').value = '';
+    loadNotificationRules();
+  } else toast(d.error||'Помилка', true);
 }
 
 async function loadListenerDebug() {
