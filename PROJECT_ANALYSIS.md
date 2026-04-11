@@ -1,71 +1,103 @@
-# Аналіз проєкту `newsmonitor`
+# Ретельний аналіз проєкту `newsmonitor`
 
-## 1) Призначення
-`newsmonitor` — локальний Python-проєкт для моніторингу новин з RSS і Telegram, з опційним AI-аналізом (Anthropic Claude), фільтрацією за категоріями/ключовими словами та веб-дашбордом для керування.  
+## 1. Що це за система
+`newsmonitor` — локальний Python-сервіс для редакційного моніторингу новин із двох потоків:
+- **batch-потік** RSS через `fetcher.py`;
+- **real-time потік** Telegram через `listener.py`.
 
-Ключові сценарії:
-- Збір новин із RSS та Telegram.
-- Класифікація та скоринг важливості новин через Claude.
-- Оповіщення в Telegram-бот і щоденний дайджест.
-- Окремий real-time listener для Telegram-каналів.
+Усе керується через web-інтерфейс (`index.html`) і API в `server.py`. Дані зберігаються в SQLite (`newsmonitor.db`) через thin data-layer `storage.py` з частковою legacy-сумісністю (JSON-файли стану/експорту).
 
-## 2) Архітектура
+## 2. Архітектура та відповідальність модулів
 
-### Компоненти
-- `server.py` — HTTP API + статика + orchestration задач (`fetcher.py`, digest, автозбір, Telegram auth).  
-- `fetcher.py` — пакетний збір даних (RSS/Telegram), AI-аналіз, запис результатів у `news_data.json`.  
-- `listener.py` — безперервний слухач нових Telegram-повідомлень через Telethon, точковий AI-аналіз і дозапис у `news_data.json`.  
-- `index.html` — SPA-подібний фронтенд (чистий HTML/CSS/JS) з вкладками Дашборд/Джерела/Налаштування.  
-- `config.py` — шляхи файлів + дефолтні налаштування/моделі/критерії важливості.
+### `server.py` (HTTP API + orchestration)
+- Піднімає `ThreadingHTTPServer` на порту `8000`.
+- Обслуговує UI та API (`/api/news`, `/api/settings`, `/api/sources`, `/api/health`, `/api/refresh`, `/api/listener/*`, Telegram auth endpoints).
+- Запускає `fetcher.py` у фоновому потоці через `subprocess.run` і тримає статус виконання.
+- Планує авто-збір (`threading.Timer`) та щоденний digest.
+- Працює зі сховищем через `Storage`.
 
-### Дані та файли стану
-- `sources.json` — перелік RSS/Telegram джерел.
-- `settings.json` — ключі API та робочі параметри.
-- `news_data.json` — агреговані новини.
-- `seen_ids.json` — дедуплікація вхідних елементів.
-- `read_items.json` — UX-стан “прочитано” у дашборді.
-- `listener_status.json`, `listener.lock` — статус/блокування listener-процесу.
+### `fetcher.py` (batch RSS pipeline)
+- Читає `sources.json` + `settings.json`.
+- Забирає RSS feed-и (`feedparser`), нормалізує запис новин.
+- Проводить keyword-matching.
+- Опційно робить batch AI-класифікацію (Anthropic Claude) з категоріями, важливістю і дубляжем.
+- Оновлює SQLite + формує legacy-`news_data.json`.
 
-## 3) API-контур (backend)
-`server.py` реалізує JSON API, серед ключових endpoint'ів:
-- `GET /api/news`, `GET /api/sources`, `GET /api/settings`, `GET /api/status`, `GET /api/listener/status`, `GET /api/refresh`, `GET /api/tg/session`.
-- `POST /api/sources`, `/api/sources/toggle`, `/api/settings`, `/api/news/read`, `/api/news/unread`, `/api/news/clear_read`, `/api/news/send`, `/api/tg/send_code`, `/api/tg/sign_in`, `/api/tg/logout`.
-- `DELETE /api/sources`.
+### `listener.py` (Telegram real-time pipeline)
+- Працює через Telethon, вимагає Telegram session-файл (`tg_session.session`).
+- Підписується на `events.NewMessage`, відсікає короткі/нерелевантні повідомлення.
+- Для кожного повідомлення: дедуп, keyword matching, опційно AI single-item аналіз, запис у SQLite.
+- Пише heartbeat і diagnostics у `listener_status.json`.
 
-Це дає фронтенду повний цикл керування без окремого фреймворку/ORM.
+### `storage.py` (SQLite layer)
+- Таблиці: `kv`, `news_items`, `seen_ids`, `read_ids`.
+- Налаштування SQLite для edge-hosting (WAL + `synchronous=NORMAL`).
+- Upsert і cleanup новин, експорт payload для API.
 
-## 4) Сильні сторони
-- **Проста структура**: 1 сервер + 2 воркери + 1 статичний фронт.
-- **Атомарний запис JSON** через `*.tmp` + `os.replace` (зменшує ризик битих файлів).
-- **Дедуплікація** та **очищення за часом/лімітом** у `fetcher.py` і `listener.py`.
-- **Гнучка конфігурація** через UI: джерела, AI, ключові слова, автооновлення, дайджест.
-- **Graceful fallback**: якщо AI вимкнено/ключ відсутній — система може продовжувати базовий збір.
+### `utils.py`
+- JSON-formatter для логів.
+- Універсальний `retry_call` з backoff/jitter.
+- `env_secret` для пріоритету секретів із env.
 
-## 5) Технічні ризики та вузькі місця
-1. **Зберігання секретів у plaintext JSON** (`settings.json`), без шифрування/vault.
-2. **Single-process JSON storage** замість БД:
-   - конкуренція записів між `fetcher.py` і `listener.py` (частково пом'якшено lock'ами/атомарними replace, але між процесами lock не централізований для всіх файлів).
-3. **`http.server` для production не підходить** (без auth, TLS, rate-limit, middleware).
-4. **Відсутні автоматичні тести** (unit/integration/e2e).
-5. **Виклики зовнішніх API без retry/backoff політики** (Anthropic/Telegram/RSS можуть деградувати).
-6. **Без централізованого логування/метрик** — важко дебажити інциденти.
+### `index.html`
+- Великий single-file frontend без framework.
+- Викликає API серверу; підтримує dashboard, фільтри, керування джерелами й налаштуваннями.
 
-## 6) Що варто зробити в першу чергу
+## 3. Потік даних (end-to-end)
+1. Користувач додає RSS/Telegram джерела та налаштування через UI.
+2. `server.py` зберігає конфіг (`sources.json`, `settings.json`) і/або запускає `fetcher.py`.
+3. `fetcher.py` тягне RSS, класифікує, пише в SQLite, оновлює `seen_ids`, експортує `news_data.json`.
+4. `listener.py` паралельно ловить Telegram повідомлення в реальному часі і також апдейтить SQLite.
+5. `GET /api/news` віддає клієнту агрегований payload зі сховища (`Storage.export_news_payload`).
+
+## 4. Сильні сторони
+- **Дуже практична архітектура для self-hosted сценарію**: без важкого стеку, швидкий старт.
+- **Надійніша персистентність** завдяки SQLite (краще за попередній pure-JSON підхід).
+- **Є retry/backoff** для зовнішніх інтеграцій (Telegram Bot API, RSS/AI виклики).
+- **Розділення batch та real-time** дає гнучкість по навантаженню й затримці.
+- **Діагностика listener-а** (bound/unbound channels, last message per source) — корисно для підтримки.
+
+## 5. Виявлені технічні ризики
+
+### 5.1 Безпека
+- У `server.py` метод `Handler._auth_required()` жорстко повертає `False`, тому адмін-auth фактично відключений (навіть якщо в налаштуваннях/README є очікування захисту).
+- Частина секретів все ще може жити в `settings.json` (env має пріоритет, але plaintext storage лишається).
+- Немає вбудованого TLS/rate-limit/CORS-hardening (для публічної мережі це ризик).
+
+### 5.2 Узгодженість даних
+- `fetcher.py` і `listener.py` одночасно працюють із SQLite + legacy JSON файлами (`news_data.json`, `seen_ids.json`).
+- У listener є лише process-local lock (`threading.Lock`) для append, але між двома різними процесами немає єдиного high-level coordination для legacy JSON snapshots.
+
+### 5.3 Операційна стабільність
+- Логи частково через `print`, частково через logger — ускладнює централізований моніторинг.
+- `subprocess.run(fetcher.py)` запускається у thread; при частих викликах важливо контролювати перекриття (базовий guard є через `_fetcher_status["running"]`).
+- AI-відповідь парситься як JSON без schema-validation (ризик падінь на malformed output).
+
+### 5.4 Тестування
+- Поточне покриття мінімальне: є тести тільки для storage cleanup/sorting і retry/logger.
+- Немає інтеграційних тестів для API, fetcher pipeline, listener status lifecycle.
+
+## 6. Технічний борг / місця для рефакторингу
+- Дублювання утиліт `load_json`/`write_json` у трьох модулях (`server.py`, `fetcher.py`, `listener.py`).
+- Змішування відповідальностей: `server.py` містить і HTTP layer, і scheduling, і Telegram auth flow.
+- Великий monolithic `index.html` (складніше підтримувати та тестувати frontend).
+
+## 7. Пріоритетний план покращень
 
 ### P0 (критично)
-- Перенести секрети з `settings.json` у env/secret-store.
-- Додати просту авторизацію на веб-інтерфейс (хоча б basic auth/reverse proxy).
-- Впровадити взаємовиключення на рівні процесів для запису `news_data.json` (file lock).
+1. Реально увімкнути web-auth (`_auth_required`) і покрити це тестом.
+2. Прибрати збереження секретів у файлі або зашифрувати/винести в env-only політику.
+3. Додати чітку стратегію синхронізації для legacy JSON snapshots або повністю перейти на SQLite-only API output.
 
 ### P1 (важливо)
-- Перейти на SQLite (джерела/новини/стан) замість flat JSON.
-- Додати retry + exponential backoff + timeout policy для зовнішніх API.
-- Додати тестовий мінімум: парсинг RSS, дедуп, cleanup, API smoke.
+1. Винести загальні IO/JSON helpers у спільний модуль.
+2. Додати валідацію AI JSON (pydantic/jsonschema) + fallback на дефолтні значення.
+3. Додати API integration tests (мінімум `/api/news`, `/api/settings`, `/api/refresh`, `/api/health`).
 
-### P2 (покращення)
-- Виділити backend у FastAPI/Flask для кращої підтримуваності.
-- Додати спостережуваність: structured logging + health endpoint + лічильники.
-- Винести prompt templates у окремий модуль/файли.
+### P2 (поліпшення)
+1. Розбити frontend на модулі (навіть без framework).
+2. Уніфікувати логування (без `print`, тільки structured logs).
+3. Додати метрики/health деталізацію (latency, кількість подій, останні помилки по каналах).
 
-## 7) Висновок
-Проєкт добре підходить як **MVP/внутрішній інструмент редакції**: швидко запускається, має корисний UI та працює без складної інфраструктури. Для стабільного продакшн-використання ключовий наступний крок — посилення безпеки, надійності зберігання даних і тестового покриття.
+## 8. Підсумок
+Проєкт уже має сильну прикладну цінність: працює локально, підтримує RSS + Telegram у двох режимах (batch/real-time), має AI-класифікацію і зручний UI. Ключовий next step для production-ready стану — **посилення auth/security**, **прибрання неоднозначності з legacy JSON-шаром**, і **системне розширення тестів**.
