@@ -80,6 +80,20 @@ class Storage:
             c.execute("CREATE INDEX IF NOT EXISTS idx_news_time ON news_items(time DESC)")
             c.execute("CREATE TABLE IF NOT EXISTS seen_ids (id TEXT PRIMARY KEY)")
             c.execute("CREATE TABLE IF NOT EXISTS read_ids (id TEXT PRIMARY KEY)")
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_rules (
+                  id TEXT PRIMARY KEY,
+                  enabled INTEGER NOT NULL DEFAULT 1,
+                  type TEXT NOT NULL,
+                  target_chat_id TEXT NOT NULL,
+                  schedule_time TEXT,
+                  params TEXT NOT NULL DEFAULT '{}',
+                  last_sent_at REAL,
+                  created_at REAL NOT NULL
+                )
+                """
+            )
 
     def set_kv(self, key: str, value: Any):
         with self.connect() as c:
@@ -224,3 +238,60 @@ class Storage:
             "new_count": new_count,
             "items": items,
         }
+
+    def list_notification_rules(self) -> list[dict]:
+        with self.connect() as c:
+            rows = c.execute("SELECT * FROM notification_rules ORDER BY created_at DESC").fetchall()
+        result = []
+        for r in rows:
+            try:
+                params = json.loads(r["params"] or "{}")
+            except Exception:
+                params = {}
+            result.append(
+                {
+                    "id": r["id"],
+                    "enabled": bool(r["enabled"]),
+                    "type": r["type"],
+                    "target_chat_id": r["target_chat_id"],
+                    "schedule_time": r["schedule_time"] or "",
+                    "params": params,
+                    "last_sent_at": r["last_sent_at"],
+                    "created_at": r["created_at"],
+                }
+            )
+        return result
+
+    def upsert_notification_rule(self, rule: dict):
+        with self.connect() as c:
+            c.execute(
+                """
+                INSERT INTO notification_rules(id,enabled,type,target_chat_id,schedule_time,params,last_sent_at,created_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                  enabled=excluded.enabled,
+                  type=excluded.type,
+                  target_chat_id=excluded.target_chat_id,
+                  schedule_time=excluded.schedule_time,
+                  params=excluded.params,
+                  last_sent_at=excluded.last_sent_at
+                """,
+                (
+                    str(rule.get("id", "")),
+                    1 if rule.get("enabled", True) else 0,
+                    str(rule.get("type", "")),
+                    str(rule.get("target_chat_id", "")),
+                    str(rule.get("schedule_time", "")),
+                    json.dumps(rule.get("params", {}), ensure_ascii=False),
+                    rule.get("last_sent_at"),
+                    float(rule.get("created_at", 0) or 0),
+                ),
+            )
+
+    def delete_notification_rule(self, rule_id: str):
+        with self.connect() as c:
+            c.execute("DELETE FROM notification_rules WHERE id = ?", (rule_id,))
+
+    def clear_notification_rules(self):
+        with self.connect() as c:
+            c.execute("DELETE FROM notification_rules")
