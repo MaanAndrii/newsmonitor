@@ -1,6 +1,7 @@
 import unittest
 
 import fetcher
+import listener
 
 
 class NotificationDispatchTest(unittest.TestCase):
@@ -39,6 +40,11 @@ class NotificationDispatchTest(unittest.TestCase):
             self.assertEqual(len(sent_payloads), 1)
         finally:
             fetcher.send_bot_message = original_send
+
+    def test_listener_match_keywords_supports_string_keywords(self):
+        kws = ["Львів", {"phrase": "Київ"}]
+        matched = listener.match_keywords("Подія у Львів сьогодні", kws)
+        self.assertIn("Львів", matched)
 
 
 if __name__ == "__main__":

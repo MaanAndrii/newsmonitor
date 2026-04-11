@@ -95,10 +95,16 @@ def match_keywords(text: str, keywords: list) -> list:
     if not keywords:
         return []
     text_lower = text.lower()
-    return [
-        kw["phrase"] for kw in keywords
-        if kw.get("phrase", "").strip().lower() in text_lower
-    ]
+    result = []
+    for kw in keywords:
+        phrase = ""
+        if isinstance(kw, dict):
+            phrase = str(kw.get("phrase", "")).strip()
+        elif isinstance(kw, str):
+            phrase = kw.strip()
+        if phrase and phrase.lower() in text_lower:
+            result.append(phrase)
+    return result
 
 
 # ── Telegram Bot ──────────────────────────────────────────────────────────────
@@ -255,7 +261,22 @@ async def run_listener():
     ai_model    = settings.get("ai_model", DEFAULT_AI_MODEL)
     api_key     = settings.get("anthropic_api_key", "")
     categories  = normalize_categories(settings.get("categories", []))
-    keywords    = settings.get("keywords", [])
+    raw_keywords = settings.get("keywords", [])
+    keywords = []
+    for kw in (raw_keywords or []):
+        if isinstance(kw, dict):
+            phrase = str(kw.get("phrase", "")).strip()
+            if phrase:
+                keywords.append({
+                    "id": str(kw.get("id", phrase)),
+                    "phrase": phrase,
+                    "urgent": bool(kw.get("urgent", False)),
+                    "to_telegram": bool(kw.get("to_telegram", True)),
+                })
+        elif isinstance(kw, str):
+            phrase = kw.strip()
+            if phrase:
+                keywords.append({"id": phrase, "phrase": phrase, "urgent": False, "to_telegram": True})
     bot_token   = settings.get("bot_token", "")
     priorities  = settings.get("importance_priorities", "")
     keep_days   = max(1, int(settings.get("keep_days", 14)))
@@ -444,7 +465,10 @@ async def run_listener():
                         prefix = "⚠️ ТЕРМІНОВА НОВИНА" if is_urgent else "🔔 Ключове слово"
                         title = f"{prefix}: {', '.join(hit)}"
                 elif rtype == "importance_hit":
-                    min_imp = int(params.get("min_importance", 8) or 8)
+                    try:
+                        min_imp = int(params.get("min_importance", 8) or 8)
+                    except Exception:
+                        min_imp = 8
                     if int(item.get("importance", 5) or 5) >= min_imp:
                         send_it = True
                         title = f"🔥 Важлива новина ({item.get('importance', 5)}/10)"
