@@ -87,10 +87,10 @@ a { color: inherit; text-decoration: none; }
 .send-btn { width: 22px; height: 22px; border-radius: 5px; border: 1px solid #e5e5e0; background: #fff; cursor: pointer; color: #bbb; font-size: 13px; display: flex; align-items: center; justify-content: center; }
 .preview-btn { font-size: 12px; color: #185FA5; background: transparent; border: none; cursor: pointer; }
 .preview-btn:hover { text-decoration: underline; }
+.card-actions { display:flex; align-items:center; gap:12px; justify-content:flex-end; margin-left:auto; }
 .send-btn:hover { background: #e3f2fd; border-color: #90caf9; color: #185FA5; }
 .send-btn.sent { color: #4caf50; border-color: #c8e6c9; }
 .card-title { font-size: 13px; font-weight: 600; line-height: 1.45; margin-bottom: 5px; }
-.card-summary { font-size: 12px; color: #555; line-height: 1.6; margin-bottom: 9px; }
 .card-footer { display: flex; align-items: center; justify-content: space-between; }
 .imp-wrap { display: flex; align-items: center; gap: 5px; }
 .imp-dots { display: flex; gap: 2px; }
@@ -215,8 +215,10 @@ a { color: inherit; text-decoration: none; }
 .modal-title { font-size: 14px; font-weight: 600; margin-right: 10px; }
 .modal-close { border: 1px solid #d0d0c8; border-radius: 6px; background: #fff; width: 28px; height: 28px; cursor: pointer; }
 .modal-body { overflow: auto; padding: 14px; }
+.modal-meta { display:grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap:8px 14px; margin-bottom: 12px; font-size: 12px; color:#666; }
+.modal-meta b { color:#333; }
 .modal-text { font-size: 13px; line-height: 1.7; color: #333; word-break: break-word; }
-.modal-links { padding: 0 14px 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+.modal-links { padding: 0 14px 14px; display: flex; justify-content: flex-end; }
 .modal-link { font-size: 13px; color: #185FA5; text-decoration: none; }
 .modal-link:hover { text-decoration: underline; }
 
@@ -676,7 +678,10 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
       <div class="modal-title" id="preview-title">Повний текст</div>
       <button class="modal-close" onclick="closePreviewModal()">✕</button>
     </div>
-    <div class="modal-body"><div class="modal-text" id="preview-text"></div></div>
+    <div class="modal-body">
+      <div class="modal-meta" id="preview-meta"></div>
+      <div class="modal-text" id="preview-text"></div>
+    </div>
     <div class="modal-links" id="preview-links"></div>
   </div>
 </div>
@@ -977,15 +982,14 @@ function renderList() {
         </div>
       </div>
       <div class="card-title">${esc(n.title)}</div>
-      ${n.summary?`<div class="card-summary">${esc(n.summary)}</div>`:''}
       <div class="card-footer">
         <div class="imp-wrap">
           <div class="imp-dots">${impDots(n.importance)}</div>
           <span class="imp-num" style="color:${aiScoreColor(n)}">${n.importance}/10</span>
         </div>
-        <div style="display:flex;align-items:center;gap:12px">
+        <div class="card-actions">
           ${fullText?`<button class="preview-btn" type="button">Повний текст</button>`:''}
-          ${n.url?`<a class="read-link" href="${esc(n.url)}" target="_blank" rel="noopener">Читати →</a>`:''}
+          ${n.url?`<a class="read-link" href="${esc(n.url)}" target="_blank" rel="noopener">Перейти в ${esc(n.source)} →</a>`:''}
         </div>
       </div>`;
 
@@ -1067,15 +1071,19 @@ function openPreviewModal(item) {
   const modal = document.getElementById('preview-modal');
   if (!modal) return;
   document.getElementById('preview-title').textContent = item.title || 'Повний текст';
+  const cat = getCatInfo(item.category);
+  const rubric = item.type === 'telegram' ? 'Telegram' : 'Веб-сайт';
+  document.getElementById('preview-meta').innerHTML = `
+    <div><b>Канал:</b> ${esc(item.source || '—')}</div>
+    <div><b>Час:</b> ${esc(fmtTime(item.time) || '—')}</div>
+    <div><b>Категорія:</b> ${esc(cat.name || '—')}</div>
+    <div><b>Рубрика:</b> ${esc(rubric)}</div>
+  `;
   const text = String(item.text || item.summary || 'Текст відсутній');
   document.getElementById('preview-text').innerHTML = esc(text).replace(/\n/g, '<br>');
-  const links = [];
-  if (item.url) links.push(`<a class="modal-link" href="${esc(item.url)}" target="_blank" rel="noopener">Перейти до джерела →</a>`);
-  const tgSource = String(item.source_id || '').replace('@', '');
-  if (item.type === 'telegram' && /^[A-Za-z0-9_]{3,}$/.test(tgSource)) {
-    links.push(`<a class="modal-link" href="https://t.me/${esc(tgSource)}" target="_blank" rel="noopener">Відкрити в Telegram →</a>`);
-  }
-  document.getElementById('preview-links').innerHTML = links.join('');
+  document.getElementById('preview-links').innerHTML = item.url
+    ? `<a class="modal-link" href="${esc(item.url)}" target="_blank" rel="noopener">Перейти до джерела →</a>`
+    : '';
   modal.classList.add('show');
 }
 
