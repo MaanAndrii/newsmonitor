@@ -7,7 +7,6 @@ import http.server
 import json
 import os
 import hashlib
-import base64
 import asyncio
 import subprocess
 import sys
@@ -25,6 +24,7 @@ from config import (
     LISTENER_FILE, SESSION_FILE,
     DEFAULT_SOURCES, DEFAULT_SETTINGS, APP_VERSION
 )
+from io_utils import load_json, write_json
 from storage import Storage
 from utils import RetryConfig, retry_call, env_secret, setup_logging
 
@@ -38,24 +38,74 @@ _fetcher_status = {
     "running":       False,
     "started_at":    None,
     "finished_at":   None,
+    "last_success_at": None,
     "error":         None,
     "next_fetch_at": None,
 }
 
 _auto_timer:   threading.Timer | None = None
 _digest_timer: threading.Timer | None = None
+_notification_timer: threading.Timer | None = None
+_enrich_timer: threading.Timer | None = None
 
 # ── Стан авторизації Telegram ─────────────────────────────────────────────────
 # Тримаємо TelegramClient між кроками send_code → sign_in
 _tg_auth: dict = {
-    "client":   None,
     "phone":    None,
     "phone_code_hash": None,
-    "loop":     None,
+    "api_id":   None,
+    "api_hash": None,
 }
 _tg_auth_lock = threading.Lock()
 _admin_sessions: dict[str, float] = {}
 SESSION_TTL_SECONDS = 60 * 60 * 12
+_conn_events: list[dict] = []
+_conn_events_lock = threading.Lock()
+
+_analyzer_lock = threading.Lock()
+_notifier_lock = threading.Lock()
+_CONN_RETENTION_SECONDS = 24 * 60 * 60
+_CONN_MAX_EVENTS = 5000
+
+
+def _record_connection(ip: str, path: str, method: str) -> None:
+    now = time.time()
+    cutoff = now - _CONN_RETENTION_SECONDS
+    event = {
+        "ts": now,
+        "ip": ip,
+        "path": path,
+        "method": method,
+    }
+    with _conn_events_lock:
+        _conn_events.append(event)
+        _conn_events[:] = [e for e in _conn_events if e.get("ts", 0) >= cutoff]
+        if len(_conn_events) > _CONN_MAX_EVENTS:
+            _conn_events[:] = _conn_events[-_CONN_MAX_EVENTS:]
+
+
+def _get_recent_connections() -> dict:
+    cutoff = time.time() - _CONN_RETENTION_SECONDS
+    with _conn_events_lock:
+        events = [e for e in _conn_events if e.get("ts", 0) >= cutoff]
+    by_ip: dict[str, dict] = {}
+    for e in events:
+        ip = str(e.get("ip", "unknown"))
+        row = by_ip.get(ip)
+        if not row:
+            row = {"ip": ip, "first_seen": e["ts"], "last_seen": e["ts"], "hits": 0}
+            by_ip[ip] = row
+        row["first_seen"] = min(row["first_seen"], e["ts"])
+        row["last_seen"] = max(row["last_seen"], e["ts"])
+        row["hits"] += 1
+    users = sorted(by_ip.values(), key=lambda x: x["last_seen"], reverse=True)
+    return {
+        "window_hours": 24,
+        "total_events": len(events),
+        "total_ips": len(users),
+        "users": users,
+        "events": events[-200:],
+    }
 
 
 # ── Fetcher ───────────────────────────────────────────────────────────────────
@@ -72,7 +122,7 @@ def _run_fetcher_process():
     def _do():
         try:
             result = subprocess.run(
-                [sys.executable, "fetcher.py"],
+                [sys.executable, "pipeline.py"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -83,6 +133,8 @@ def _run_fetcher_process():
                     f"Fetcher exited with code {result.returncode}"
                 )
                 LOGGER.error(_fetcher_status["error"])
+            else:
+                _fetcher_status["last_success_at"] = time.time()
         except Exception as e:
             _fetcher_status["error"] = str(e)
             LOGGER.exception("Fetcher process failed")
@@ -145,21 +197,111 @@ def _schedule_digest(digest_time: str, enabled: bool):
 
 
 def _digest_tick(digest_time: str):
-    s = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+    s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
     if s.get("bot_token") and s.get("bot_chat_id"):
         _send_digest(s["bot_token"], s["bot_chat_id"],
-                     max(1, int(s.get("digest_count", 5))))
+                     max(1, int(s.get("digest_count", 5))),
+                     str(s.get("digest_mode", "top")),
+                     s.get("keywords", []))
     _schedule_digest(digest_time, True)
 
 
-def _send_digest(bot_token: str, chat_id: str, count: int):
+def _schedule_notifications_poll():
+    global _notification_timer
+    if _notification_timer:
+        _notification_timer.cancel()
+    _notification_timer = threading.Timer(60, _notifications_poll_tick)
+    _notification_timer.daemon = True
+    _notification_timer.start()
+
+
+def _notifications_poll_tick():
+    try:
+        now = time.localtime()
+        hhmm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
+        for rule in STORAGE.list_notification_rules():
+            if not rule.get("enabled"):
+                continue
+            if rule.get("type") != "digest_summary":
+                continue
+            if str(rule.get("schedule_time", "")) != hhmm:
+                continue
+            s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
+            bot_token = s.get("bot_token", "")
+            chat_id = str(rule.get("target_chat_id", "")).strip()
+            if not bot_token or not chat_id:
+                continue
+            params = rule.get("params", {}) if isinstance(rule.get("params"), dict) else {}
+            count = max(1, int(params.get("count", 5) or 5))
+            mode = str(params.get("mode", "top"))
+            _send_digest(bot_token, chat_id, count, mode, s.get("keywords", []))
+            rule["last_sent_at"] = time.time()
+            STORAGE.upsert_notification_rule(rule)
+    except Exception:
+        LOGGER.exception("[NOTIFY] poll error")
+    finally:
+        _schedule_notifications_poll()
+
+
+def _run_stage_process(script_name: str, lock: threading.Lock):
+    if not lock.acquire(blocking=False):
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, script_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            LOGGER.error("[%s] %s", script_name, result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+    except Exception:
+        LOGGER.exception("[%s] stage failed", script_name)
+    finally:
+        lock.release()
+
+
+def _schedule_enrichment_poll(interval_sec: int = 60):
+    global _enrich_timer
+    if _enrich_timer:
+        _enrich_timer.cancel()
+    _enrich_timer = threading.Timer(interval_sec, _enrichment_poll_tick, args=[interval_sec])
+    _enrich_timer.daemon = True
+    _enrich_timer.start()
+
+
+def _enrichment_poll_tick(interval_sec: int = 60):
+    try:
+        _run_stage_process("analyzer.py", _analyzer_lock)
+        _run_stage_process("notifier.py", _notifier_lock)
+    finally:
+        _schedule_enrichment_poll(interval_sec)
+
+
+def _send_digest(bot_token: str, chat_id: str, count: int, mode: str = "top", keywords: list | None = None):
     try:
         data = {"items": STORAGE.load_items()}
-        top = sorted(data.get("items", []),
-                     key=lambda x: x.get("importance", 0), reverse=True)[:count]
+        items = data.get("items", [])
+        if mode == "keywords":
+            sendable = set()
+            for kw in keywords or []:
+                if kw.get("to_telegram", True):
+                    phrase = str(kw.get("phrase", "")).strip().lower()
+                    if phrase:
+                        sendable.add(phrase)
+            filtered = []
+            if sendable:
+                for it in items:
+                    matched = [str(x).strip().lower() for x in (it.get("matched_keywords") or [])]
+                    if any(m in sendable for m in matched):
+                        filtered.append(it)
+            top = sorted(filtered, key=lambda x: x.get("importance", 0), reverse=True)[:count]
+        else:
+            top = sorted(items, key=lambda x: x.get("importance", 0), reverse=True)[:count]
         if not top:
             return
-        lines = [f"<b>📰 Дайджест — топ {len(top)} новин</b>\n"]
+        title = "📰 Дайджест — за ключовими словами" if mode == "keywords" else f"📰 Дайджест — топ {len(top)} новин"
+        lines = [f"<b>{title}</b>\n"]
         for i, item in enumerate(top, 1):
             line = f"{i}. <b>{item.get('title','')}</b> [{item.get('source','')} | {item.get('importance',5)}/10]"
             if item.get("url"):
@@ -197,27 +339,6 @@ def _send_bot_message(bot_token: str, chat_id: str, text: str) -> bool:
 
 # ── Утиліти ──────────────────────────────────────────────────────────────────
 
-def load_json(path: str, default) -> dict:
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(default, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            return data
-        except (json.JSONDecodeError, OSError):
-            pass
-    write_json(path, default)
-    return dict(default)
-
-def write_json(path: str, data) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
 def load_read_ids() -> set:
     ids = STORAGE.load_read_ids()
     if ids:
@@ -238,9 +359,31 @@ def save_read_ids(ids: set) -> None:
 
 def resolve_settings_with_env(settings: dict) -> dict:
     merged = dict(settings)
-    merged["anthropic_api_key"] = env_secret("NEWSMONITOR_ANTHROPIC_API_KEY", merged.get("anthropic_api_key", ""))
-    merged["telegram_api_hash"] = env_secret("NEWSMONITOR_TELEGRAM_API_HASH", merged.get("telegram_api_hash", ""))
-    merged["bot_token"] = env_secret("NEWSMONITOR_BOT_TOKEN", merged.get("bot_token", ""))
+    merged["anthropic_api_key"] = (
+        env_secret("NEWSMONITOR_ANTHROPIC_API_KEY")
+        or env_secret("ANTHROPIC_API_KEY")
+        or merged.get("anthropic_api_key", "")
+    )
+    merged["telegram_api_hash"] = (
+        env_secret("NEWSMONITOR_TELEGRAM_API_HASH")
+        or env_secret("TELEGRAM_API_HASH")
+        or merged.get("telegram_api_hash", "")
+    )
+    merged["bot_token"] = (
+        env_secret("NEWSMONITOR_BOT_TOKEN")
+        or env_secret("BOT_TOKEN")
+        or merged.get("bot_token", "")
+    )
+    if not int(merged.get("telegram_api_id", 0) or 0):
+        env_api_id = (
+            os.getenv("NEWSMONITOR_TELEGRAM_API_ID", "").strip()
+            or os.getenv("TELEGRAM_API_ID", "").strip()
+        )
+        if env_api_id:
+            try:
+                merged["telegram_api_id"] = int(env_api_id)
+            except ValueError:
+                pass
     return merged
 
 def get_listener_status() -> dict:
@@ -354,11 +497,25 @@ def detect_telegram_channel_name(username: str) -> str:
 
 # ── Авторизація Telegram ──────────────────────────────────────────────────────
 
+def _ensure_thread_event_loop():
+    """Telethon sync API in threaded HTTP handlers requires a loop bound to current thread."""
+    try:
+        asyncio.get_running_loop()
+        return
+    except RuntimeError:
+        pass
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
 def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
     """Крок 1: надсилає код підтвердження на номер телефону."""
     from telethon.sync import TelegramClient as SyncClient
+    _ensure_thread_event_loop()
     try:
-        # закриваємо попередній клієнт якщо є
+        # скидаємо попередній auth context
         _cleanup_tg_auth()
 
         client = SyncClient(SESSION_FILE, api_id, api_hash)
@@ -369,10 +526,12 @@ def _tg_auth_send_code(phone: str, api_id: int, api_hash: str) -> dict:
             return {"ok": True, "already_authorized": True}
 
         result = client.send_code_request(phone)
+        client.disconnect()
         with _tg_auth_lock:
-            _tg_auth["client"]          = client
             _tg_auth["phone"]           = phone
             _tg_auth["phone_code_hash"] = result.phone_code_hash
+            _tg_auth["api_id"]          = api_id
+            _tg_auth["api_hash"]        = api_hash
         return {"ok": True, "already_authorized": False}
     except Exception as e:
         _cleanup_tg_auth()
@@ -386,20 +545,27 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
         SessionPasswordNeededError
     )
     with _tg_auth_lock:
-        client          = _tg_auth.get("client")
         phone           = _tg_auth.get("phone")
         phone_code_hash = _tg_auth.get("phone_code_hash")
+        api_id          = _tg_auth.get("api_id")
+        api_hash        = _tg_auth.get("api_hash")
 
-    if not client or not phone:
+    _ensure_thread_event_loop()
+
+    if not phone or not api_id or not api_hash:
         return {"ok": False, "error": "Спочатку надішліть код (крок 1)"}
 
+    from telethon.sync import TelegramClient as SyncClient
+    client = SyncClient(SESSION_FILE, int(api_id), str(api_hash))
     try:
+        client.connect()
         client.sign_in(phone, code, phone_code_hash=phone_code_hash)
         client.disconnect()
         _cleanup_tg_auth()
         return {"ok": True}
     except SessionPasswordNeededError:
         if not password:
+            client.disconnect()
             return {"ok": False, "need_password": True}
         try:
             client.sign_in(password=password)
@@ -407,6 +573,10 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
             _cleanup_tg_auth()
             return {"ok": True}
         except Exception as e:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
             return {"ok": False, "error": str(e)}
     except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
         return {"ok": False, "error": "Невірний або прострочений код"}
@@ -416,15 +586,10 @@ def _tg_auth_sign_in(code: str, password: str = "") -> dict:
 
 def _cleanup_tg_auth():
     with _tg_auth_lock:
-        client = _tg_auth.get("client")
-        if client:
-            try:
-                client.disconnect()
-            except Exception:
-                pass
-        _tg_auth["client"]          = None
         _tg_auth["phone"]           = None
         _tg_auth["phone_code_hash"] = None
+        _tg_auth["api_id"]          = None
+        _tg_auth["api_hash"]        = None
 
 
 def _tg_auth_logout() -> dict:
@@ -450,7 +615,9 @@ class NewsMonitorHTTPServer(http.server.ThreadingHTTPServer):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _auth_required(self) -> bool:
-        return False
+        user = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
+        pwd = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
+        return bool(user and pwd)
 
     def _authorized(self) -> bool:
         if not self._auth_required():
@@ -514,12 +681,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if not self._authorized():
-            self._deny_auth()
-            return
         p = urlparse(self.path).path
+        _record_connection(self.client_address[0], p, "GET")
+        if not self._authorized():
+            public_api = {
+                "/api/news",
+                "/api/version",
+                "/api/health",
+                "/api/listener/status",
+                "/api/dashboard/config",
+                "/api/me",
+                "/api/notifications/rules",
+            }
+            if p == "/api/me":
+                self.send_json({"admin": False})
+                return
+            if p.startswith("/api/") and p not in public_api:
+                self._deny_auth()
+                return
+            if p in public_api:
+                routes = {
+                    "/api/news":            self._serve_news,
+                    "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
+                    "/api/health":          self._serve_health,
+                    "/api/listener/status": lambda: self.send_json(get_listener_status()),
+                    "/api/dashboard/config": self._serve_dashboard_config,
+                    "/api/notifications/rules": lambda: self.send_json({"rules": []}),
+                }
+                if p in routes:
+                    routes[p]()
+                    return
+            # дозволяємо віддати сторінку логіну/статику
+            super().do_GET()
+            return
         admin_only = {
             "/api/settings",
+            "/api/settings/debug",
+            "/api/debug/connections",
+            "/api/notifications/rules",
             "/api/sources",
             "/api/refresh",
             "/api/tg/session",
@@ -531,6 +730,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/news":            self._serve_news,
             "/api/sources":         lambda: self.send_json(load_sources_with_defaults()),
             "/api/settings":        self._serve_settings,
+            "/api/settings/debug":  self._serve_settings_debug,
+            "/api/debug/connections": lambda: self.send_json(_get_recent_connections()),
+            "/api/notifications/rules": lambda: self.send_json({"rules": STORAGE.list_notification_rules()}),
             "/api/dashboard/config": self._serve_dashboard_config,
             "/api/me":              lambda: self.send_json({"admin": self._authorized() if self._auth_required() else True}),
             "/api/version":         lambda: self.send_json({"version": APP_VERSION}),
@@ -552,11 +754,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        p    = urlparse(self.path).path
+        _record_connection(self.client_address[0], p, "POST")
+        body = self._read_body()
+        if p == "/api/login":
+            self._login(body)
+            return
         if not self._authorized():
             self._deny_auth()
             return
-        p    = urlparse(self.path).path
-        body = self._read_body()
         admin_only = {
             "/api/sources",
             "/api/sources/toggle",
@@ -570,6 +776,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code",
             "/api/tg/sign_in",
             "/api/tg/logout",
+            "/api/notifications/clear",
+            "/api/notifications/rules/create",
+            "/api/notifications/rules/update",
+            "/api/notifications/rules/delete",
         }
         if p in admin_only and not self._require_admin():
             return
@@ -586,7 +796,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/tg/send_code":     lambda: self._tg_send_code(body),
             "/api/tg/sign_in":       lambda: self._tg_sign_in(body),
             "/api/tg/logout":        lambda: self.send_json(_tg_auth_logout()),
-            "/api/login":            lambda: self._login(body),
+            "/api/notifications/clear": self._clear_notifications,
+            "/api/notifications/rules/create": lambda: self._create_notification_rule(body),
+            "/api/notifications/rules/update": lambda: self._update_notification_rule(body),
+            "/api/notifications/rules/delete": lambda: self._delete_notification_rule(body),
             "/api/logout":           self._logout,
         }
         if p in routes:
@@ -637,15 +850,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         safe["auth_enabled"]      = self._auth_required()
         self.send_json(safe)
 
+    def _serve_settings_debug(self):
+        raw = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        resolved = resolve_settings_with_env(raw)
+        debug = STORAGE.get_kv("settings_debug", {})
+        if not isinstance(debug, dict):
+            debug = {}
+        self.send_json({
+            "last_save_at": debug.get("saved_at"),
+            "last_payload": debug.get("payload", {}),
+            "stored": {
+                "telegram_api_id": int(raw.get("telegram_api_id", 0) or 0),
+                "has_anthropic_key": bool(raw.get("anthropic_api_key")),
+                "has_telegram_hash": bool(raw.get("telegram_api_hash")),
+                "has_bot_token": bool(raw.get("bot_token")),
+                "digest_mode": str(raw.get("digest_mode", "top")),
+            },
+            "effective": {
+                "has_anthropic_key": bool(resolved.get("anthropic_api_key")),
+                "has_telegram_hash": bool(resolved.get("telegram_api_hash")),
+                "has_bot_token": bool(resolved.get("bot_token")),
+                "digest_mode": str(resolved.get("digest_mode", "top")),
+            },
+        })
+
     def _serve_dashboard_config(self):
         s = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         self.send_json({
             "categories": s.get("categories", []),
             "keywords":   s.get("keywords", []),
+            "theme_mode": s.get("theme_mode", "auto"),
+            "footer_text": s.get("footer_text", ""),
         })
 
     def _login(self, body: dict):
-        self.send_json({"ok": True, "admin": True})
+        if not self._auth_required():
+            self.send_json({"ok": True, "admin": True})
+            return
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", "")).strip()
+        auth_user = os.getenv("NEWSMONITOR_AUTH_USER", "").strip()
+        auth_pass = os.getenv("NEWSMONITOR_AUTH_PASS", "").strip()
+        if username != auth_user or password != auth_pass:
+            self.send_json({"ok": False, "error": "invalid_credentials"}, 401)
+            return
+        token = self._create_admin_session()
+        self.send_json(
+            {"ok": True, "admin": True},
+            extra_headers=[("Set-Cookie", f"nm_admin={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}")],
+        )
 
     def _logout(self):
         self._clear_admin_session()
@@ -655,11 +908,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         )
 
     def _serve_health(self):
+        now = time.time()
+        listener = get_listener_status()
+        listener_updated = listener.get("updated_at") if isinstance(listener, dict) else None
         self.send_json({
             "ok": True,
-            "ts": time.time(),
+            "ts": now,
             "fetcher_running": _fetcher_status["running"],
-            "listener": get_listener_status().get("status", "unknown"),
+            "fetcher_last_error": _fetcher_status.get("error"),
+            "fetcher_last_success_age_sec": (
+                round(now - _fetcher_status["last_success_at"], 2)
+                if _fetcher_status.get("last_success_at") else None
+            ),
+            "listener": listener.get("status", "unknown"),
+            "listener_last_error": listener.get("error", ""),
+            "listener_heartbeat_age_sec": (
+                round(now - listener_updated, 2) if listener_updated else None
+            ),
             "db_path": STORAGE.path,
         })
 
@@ -675,6 +940,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"authorized": False, "error": "Не вказано API ID/Hash"}); return
         try:
             from telethon.sync import TelegramClient as SyncClient
+            _ensure_thread_event_loop()
             client = SyncClient(SESSION_FILE, api_id, api_hash)
             client.connect()
             authorized = client.is_user_authorized()
@@ -701,7 +967,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _tg_send_code(self, body: dict):
         phone    = str(body.get("phone", "")).strip()
-        s        = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        s        = resolve_settings_with_env(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
         api_id   = int(s.get("telegram_api_id",   0) or 0)
         api_hash = s.get("telegram_api_hash", "")
         if not phone:
@@ -811,13 +1077,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
 
         # булеві
-        for k in ("ai_enabled", "digest_enabled", "listener_enabled"):
+        for k in ("ai_enabled", "digest_enabled", "listener_enabled", "notify_keywords_enabled", "notify_importance_enabled"):
             if k in body:
                 settings[k] = bool(body[k])
 
         # числові
         for k in ("rss_depth", "auto_fetch_interval",
-                  "keep_days", "max_items", "digest_count"):
+                  "keep_days", "max_items", "digest_count", "notify_importance_min"):
             if k in body:
                 try:
                     settings[k] = max(0, int(body[k]))
@@ -831,15 +1097,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
 
         # рядкові
-        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities"):
+        for k in ("ai_model", "digest_time", "bot_chat_id", "importance_priorities", "digest_mode", "theme_mode", "footer_text"):
             if k in body:
                 settings[k] = str(body[k])
 
-        # секрети — зберігаємо тільки якщо не порожні
+        # секрети — env має пріоритет, але дозволяємо зберігати в settings.json
         for k in ("anthropic_api_key", "telegram_api_hash", "bot_token"):
-            val = str(body.get(k, "")).strip()
-            if val:
-                settings[k] = val
+            if k in body:
+                val = str(body.get(k, "")).strip()
+                if val:
+                    settings[k] = val
 
         # категорії
         if "categories" in body and isinstance(body["categories"], list):
@@ -858,14 +1125,83 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for kw in body["keywords"]:
                 phrase = str(kw.get("phrase", "")).strip()
                 urgent = bool(kw.get("urgent", False))
+                to_telegram = bool(kw.get("to_telegram", True))
                 if phrase:
-                    kws.append({"id": phrase, "phrase": phrase, "urgent": urgent})
+                    kws.append({"id": phrase, "phrase": phrase, "urgent": urgent, "to_telegram": to_telegram})
             settings["keywords"] = kws
 
         write_json(SETTINGS_FILE, settings)
+        STORAGE.set_kv("settings_debug", {
+            "saved_at": time.time(),
+            "payload": {
+                "telegram_api_id": int(settings.get("telegram_api_id", 0) or 0),
+                "anthropic_api_key_len": len(str(body.get("anthropic_api_key", ""))),
+                "telegram_api_hash_len": len(str(body.get("telegram_api_hash", ""))),
+                "bot_token_len": len(str(body.get("bot_token", ""))),
+            },
+        })
         _schedule_auto_fetch(settings.get("auto_fetch_interval", 0))
         _schedule_digest(settings.get("digest_time", "09:00"),
                          settings.get("digest_enabled", False))
+        self.send_json({"ok": True})
+
+    def _clear_notifications(self):
+        settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+        settings["digest_enabled"] = False
+        settings["notify_keywords_enabled"] = False
+        settings["notify_importance_enabled"] = False
+        settings["digest_mode"] = "top"
+        settings["digest_count"] = 5
+        settings["digest_time"] = "09:00"
+        write_json(SETTINGS_FILE, settings)
+        _schedule_digest(settings.get("digest_time", "09:00"), False)
+        STORAGE.clear_notification_rules()
+        self.send_json({"ok": True})
+
+    def _create_notification_rule(self, body: dict):
+        rule_id = secrets.token_hex(8)
+        rule_type = str(body.get("type", "")).strip()
+        target_chat_id = str(body.get("target_chat_id", "")).strip()
+        if rule_type not in {"digest_summary", "keyword_hit", "importance_hit", "source_hit"}:
+            self.send_json({"ok": False, "error": "invalid_type"}, 400)
+            return
+        if not target_chat_id:
+            self.send_json({"ok": False, "error": "target_required"}, 400)
+            return
+        rule = {
+            "id": rule_id,
+            "enabled": bool(body.get("enabled", True)),
+            "type": rule_type,
+            "target_chat_id": target_chat_id,
+            "schedule_time": str(body.get("schedule_time", "")),
+            "params": body.get("params", {}) if isinstance(body.get("params", {}), dict) else {},
+            "last_sent_at": None,
+            "created_at": time.time(),
+        }
+        STORAGE.upsert_notification_rule(rule)
+        self.send_json({"ok": True, "rule": rule})
+
+    def _update_notification_rule(self, body: dict):
+        rule_id = str(body.get("id", "")).strip()
+        if not rule_id:
+            self.send_json({"ok": False, "error": "id_required"}, 400)
+            return
+        existing = next((r for r in STORAGE.list_notification_rules() if r.get("id") == rule_id), None)
+        if not existing:
+            self.send_json({"ok": False, "error": "not_found"}, 404)
+            return
+        for key in ("enabled", "type", "target_chat_id", "schedule_time", "params"):
+            if key in body:
+                existing[key] = body[key]
+        STORAGE.upsert_notification_rule(existing)
+        self.send_json({"ok": True, "rule": existing})
+
+    def _delete_notification_rule(self, body: dict):
+        rule_id = str(body.get("id", "")).strip()
+        if not rule_id:
+            self.send_json({"ok": False, "error": "id_required"}, 400)
+            return
+        STORAGE.delete_notification_rule(rule_id)
         self.send_json({"ok": True})
 
     def _send_news(self, body: dict):
@@ -926,6 +1262,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
     def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         super().end_headers()
@@ -948,6 +1287,8 @@ if __name__ == "__main__":
 
     if settings.get("digest_enabled"):
         _schedule_digest(settings.get("digest_time", "09:00"), True)
+    _schedule_notifications_poll()
+    _schedule_enrichment_poll(60)
 
     LOGGER.info("Сервер: http://localhost:%s", PORT)
     LOGGER.info("Ctrl+C — зупинити")
