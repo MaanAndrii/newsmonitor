@@ -46,6 +46,7 @@ _fetcher_status = {
 _auto_timer:   threading.Timer | None = None
 _digest_timer: threading.Timer | None = None
 _notification_timer: threading.Timer | None = None
+_enrich_timer: threading.Timer | None = None
 
 # ── Стан авторизації Telegram ─────────────────────────────────────────────────
 # Тримаємо TelegramClient між кроками send_code → sign_in
@@ -60,6 +61,9 @@ _admin_sessions: dict[str, float] = {}
 SESSION_TTL_SECONDS = 60 * 60 * 12
 _conn_events: list[dict] = []
 _conn_events_lock = threading.Lock()
+
+_analyzer_lock = threading.Lock()
+_notifier_lock = threading.Lock()
 _CONN_RETENTION_SECONDS = 24 * 60 * 60
 _CONN_MAX_EVENTS = 5000
 
@@ -237,6 +241,41 @@ def _notifications_poll_tick():
         LOGGER.exception("[NOTIFY] poll error")
     finally:
         _schedule_notifications_poll()
+
+
+def _run_stage_process(script_name: str, lock: threading.Lock):
+    if not lock.acquire(blocking=False):
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, script_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            LOGGER.error("[%s] %s", script_name, result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+    except Exception:
+        LOGGER.exception("[%s] stage failed", script_name)
+    finally:
+        lock.release()
+
+
+def _schedule_enrichment_poll(interval_sec: int = 60):
+    global _enrich_timer
+    if _enrich_timer:
+        _enrich_timer.cancel()
+    _enrich_timer = threading.Timer(interval_sec, _enrichment_poll_tick, args=[interval_sec])
+    _enrich_timer.daemon = True
+    _enrich_timer.start()
+
+
+def _enrichment_poll_tick(interval_sec: int = 60):
+    try:
+        _run_stage_process("analyzer.py", _analyzer_lock)
+        _run_stage_process("notifier.py", _notifier_lock)
+    finally:
+        _schedule_enrichment_poll(interval_sec)
 
 
 def _send_digest(bot_token: str, chat_id: str, count: int, mode: str = "top", keywords: list | None = None):
@@ -1249,6 +1288,7 @@ if __name__ == "__main__":
     if settings.get("digest_enabled"):
         _schedule_digest(settings.get("digest_time", "09:00"), True)
     _schedule_notifications_poll()
+    _schedule_enrichment_poll(60)
 
     LOGGER.info("Сервер: http://localhost:%s", PORT)
     LOGGER.info("Ctrl+C — зупинити")
