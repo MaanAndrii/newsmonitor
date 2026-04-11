@@ -47,6 +47,8 @@ _auto_timer:   threading.Timer | None = None
 _digest_timer: threading.Timer | None = None
 _notification_timer: threading.Timer | None = None
 _enrich_timer: threading.Timer | None = None
+_listener_process = None
+_listener_process_lock = threading.Lock()
 
 # ── Стан авторизації Telegram ─────────────────────────────────────────────────
 # Тримаємо TelegramClient між кроками send_code → sign_in
@@ -144,6 +146,29 @@ def _run_fetcher_process():
                 _fetcher_status["finished_at"] = time.time()
 
     threading.Thread(target=_do, daemon=True).start()
+
+
+def _start_listener_process() -> bool:
+    """
+    Запускає listener.py у фоні (best-effort), якщо він ще не працює.
+    Повертає True лише якщо новий процес було створено.
+    """
+    global _listener_process
+    with _listener_process_lock:
+        if _listener_process and _listener_process.poll() is None:
+            return False
+        try:
+            _listener_process = subprocess.Popen(
+                [sys.executable, "listener.py"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            LOGGER.info("[LISTENER] Фоновий процес запущено (pid=%s)", _listener_process.pid)
+            return True
+        except Exception:
+            LOGGER.exception("[LISTENER] Не вдалося запустити listener.py")
+            return False
 
 
 def _schedule_auto_fetch(interval_minutes: int):
@@ -1143,6 +1168,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         _schedule_auto_fetch(settings.get("auto_fetch_interval", 0))
         _schedule_digest(settings.get("digest_time", "09:00"),
                          settings.get("digest_enabled", False))
+        if settings.get("listener_enabled", False):
+            _start_listener_process()
         self.send_json({"ok": True})
 
     def _clear_notifications(self):
@@ -1287,6 +1314,8 @@ if __name__ == "__main__":
 
     if settings.get("digest_enabled"):
         _schedule_digest(settings.get("digest_time", "09:00"), True)
+    if settings.get("listener_enabled", False):
+        _start_listener_process()
     _schedule_notifications_poll()
     _schedule_enrichment_poll(60)
 
