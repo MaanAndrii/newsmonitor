@@ -407,8 +407,20 @@ async def run():
     all_items = list(rss_items)
     LOGGER.info("Зібрано RSS: %s", len(rss_items))
 
+    # Додаємо вже отримані listener-новини ДО етапу enrichment,
+    # щоб AI/keywords/monitoring працювали по єдиному pipeline з БД.
+    try:
+        existing_items = STORAGE.load_items()
+        rss_ids = {it["id"] for it in all_items}
+        listener_only = [it for it in existing_items if it.get("id") not in rss_ids]
+        if listener_only:
+            LOGGER.info("Додаємо %s новин від listener у pipeline", len(listener_only))
+            all_items.extend(listener_only)
+    except Exception as e:
+        LOGGER.warning("Не вдалося підвантажити listener-новини: %s", e)
+
     if not all_items:
-        LOGGER.info("Немає новин для збереження.")
+        LOGGER.info("Немає новин для обробки.")
         return
 
     # ── Нові vs відомі ───────────────────────────────────────────────────────
@@ -502,18 +514,7 @@ async def run():
     # ── Seen IDs ─────────────────────────────────────────────────────────────
     save_seen_ids(seen_ids | {it["id"] for it in all_items})
 
-    # ── Об'єднання з новинами від слухача ────────────────────────────────────
     LOGGER.info("[3/4] Збереження")
-    try:
-        existing = {"items": STORAGE.load_items()}
-        fetcher_ids   = {it["id"] for it in all_items}
-        listener_only = [it for it in existing.get("items", [])
-                         if it["id"] not in fetcher_ids]
-        if listener_only:
-            LOGGER.info("Додаємо %s новин від слухача", len(listener_only))
-            all_items = all_items + listener_only
-    except Exception as e:
-        LOGGER.warning("Об'єднання з слухачем: %s", e)
 
     all_items.sort(key=lambda x: x.get("time", ""), reverse=True)
     all_items = cleanup_old_items(all_items, keep_days, max_items)
