@@ -163,7 +163,7 @@ def notify_by_rules(new_items: list, rules: list, bot_token: str) -> int:
     for item in new_items:
         item_keywords = {str(x).lower() for x in (item.get("matched_keywords") or [])}
         item_importance = int(item.get("importance", 5) or 5)
-        item_source = str(item.get("source_id", ""))
+        item_source = str(item.get("source_id", "")).strip().lower()
         for rule in rules:
             if not rule.get("enabled"):
                 continue
@@ -186,7 +186,7 @@ def notify_by_rules(new_items: list, rules: list, bot_token: str) -> int:
                     allow = True
                     title = f"🔥 Важлива новина ({item_importance}/10)"
             elif rtype == "source_hit":
-                src_ids = {str(x) for x in (params.get("source_ids") or [])}
+                src_ids = {str(x).strip().lower() for x in (params.get("source_ids") or [])}
                 if item_source and item_source in src_ids:
                     allow = True
                     title = f"📡 Джерело: {item.get('source', '')}"
