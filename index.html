@@ -545,9 +545,9 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
             <div class="setting-hint" id="bot-token-hint"></div>
           </div>
           <div class="setting-row">
-            <label>Chat ID</label>
+            <label>Chat ID (за замовчуванням)</label>
             <input type="text" id="set-bot-chat-id" placeholder="-1001234567890">
-            <div class="setting-hint">Група, канал або особистий чат</div>
+            <div class="setting-hint">Використовується як значення за замовчуванням і для ручної відправки новин</div>
           </div>
         </div>
       </div>
@@ -573,7 +573,23 @@ body.theme-dark .field input, body.theme-dark .field select, body.theme-dark .se
         </div>
         <div class="field"><label>Chat ID</label><input type="text" class="rule-chat" placeholder="-100..."></div>
         <div class="field"><label>Час (для огляду)</label><input type="time" class="rule-time" value="09:00"></div>
-        <div class="field"><label>Параметр</label><input type="text" class="rule-param" placeholder="count=5 | keywords=слово1,слово2 | min=8 | sources=id1,id2"></div>
+        <div class="field rule-count-field"><label>Кількість новин</label><input type="number" class="rule-count" min="1" max="20" value="5"></div>
+        <div class="field rule-mode-field">
+          <label>Режим огляду</label>
+          <select class="rule-mode">
+            <option value="top">Найважливіші</option>
+            <option value="keywords">За ключовими словами</option>
+          </select>
+        </div>
+        <div class="field rule-min-field" style="display:none"><label>Мін. важливість</label><input type="number" class="rule-min" min="1" max="10" value="8"></div>
+        <div class="field rule-keyword-field" style="display:none">
+          <label>Ключове слово</label>
+          <select class="rule-keyword"></select>
+        </div>
+        <div class="field rule-source-field" style="display:none">
+          <label>Джерело</label>
+          <select class="rule-source"></select>
+        </div>
         <button class="btn primary" onclick="createRule(this.closest('.add-form'))">+ Додати правило</button>
       </div>
     </div>
@@ -676,6 +692,7 @@ const KEY_MASK = '**********';
 let clockTimer = null;
 const sourceSortMode = { rss: 'name', telegram: 'name' };
 let notificationRules = [];
+let notificationSourceOptions = [];
 
 // ── Утиліти ───────────────────────────────────────────────────────────────────
 function esc(s) {
@@ -791,7 +808,7 @@ document.querySelectorAll('.stab').forEach(t => t.addEventListener('click', () =
   if (t.dataset.stab === 'sources') loadSources();
   if (t.dataset.stab === 'telegram-auth') checkTgSession();
   if (t.dataset.stab === 'debug') loadListenerDebug();
-  if (t.dataset.stab === 'bot') loadNotificationRules();
+  if (t.dataset.stab === 'bot') { loadNotificationRules(); refreshRuleFormOptions(); }
 }));
 
 document.querySelectorAll('.chip[data-f]').forEach(c => c.addEventListener('click', () => {
@@ -1149,6 +1166,7 @@ async function loadSources() {
     (diag.sources || []).forEach(s => { listenerDiagBySource[s.id] = s; });
     renderSrcTable('rss',      data.rss      || []);
     renderSrcTable('telegram', data.telegram || []);
+    refreshRuleFormOptions();
   } catch { toast('Не вдалося завантажити джерела', true); }
 }
 
@@ -1427,7 +1445,9 @@ async function loadSettings() {
     const tgHint = document.getElementById('tg-hash-hint');
     tgHint.textContent = d.has_telegram_hash ? '✓ Hash доданий і валідний' : 'Не вказано';
     tgHint.className   = 'setting-hint ' + (d.has_telegram_hash ? 'ok' : 'err');
-    document.getElementById('bot-token-hint').textContent = d.has_bot_token?'✓ Токен збережено':'Не вказано';
+    const botHint = document.getElementById('bot-token-hint');
+    botHint.textContent = d.has_bot_token ? '✓ Токен збережено' : '✕ Токен не збережено';
+    botHint.className   = 'setting-hint ' + (d.has_bot_token ? 'ok' : 'err');
     categories = d.categories||[];
     Object.keys(kwUrgentMap).forEach(k=>delete kwUrgentMap[k]);
     (d.keywords||[]).forEach(kw=>{ kwUrgentMap[kw.phrase.toLowerCase()]=kw.urgent; });
@@ -1439,6 +1459,9 @@ async function loadSettings() {
     renderCatTable(settingsCache.categories);
     renderKwTable(settingsCache.keywords);
     renderCatChips();
+    const ruleChatInput = document.querySelector('#rule-form .rule-chat');
+    if (ruleChatInput && !ruleChatInput.value.trim()) ruleChatInput.value = d.bot_chat_id || '';
+    await refreshRuleFormOptions();
 
     try {
       const s=await api('/api/status');
@@ -1542,6 +1565,7 @@ function renderKwTable(kws) {
     tr.querySelector('.del-btn').addEventListener('click',()=>{
       settingsCache.keywords.splice(i,1);
       renderKwTable(settingsCache.keywords);
+      refreshRuleFormOptions();
     });
     tbody.appendChild(tr);
   });
@@ -1559,6 +1583,7 @@ function addKeyword(form) {
   }
   settingsCache.keywords.push({id:phrase,phrase,urgent:urgentEl?urgentEl.checked:false,to_telegram:tgEl?tgEl.checked:true});
   renderKwTable(settingsCache.keywords);
+  refreshRuleFormOptions();
   phraseEl.value='';
   if (urgentEl) urgentEl.checked=false;
   if (tgEl) tgEl.checked=true;
@@ -1608,6 +1633,12 @@ async function saveSettings() {
 async function init() {
   document.title = SETTINGS_MODE ? 'News Monitor — Налаштування' : 'News Monitor — Дашборд';
   mountSourcesInsideSettings();
+  const ruleForm = document.getElementById('rule-form');
+  if (ruleForm) {
+    const typeSel = ruleForm.querySelector('.rule-type');
+    if (typeSel) typeSel.addEventListener('change', () => updateRuleFormVisibility(ruleForm));
+    updateRuleFormVisibility(ruleForm);
+  }
   const bindSort = (id, type, mode) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -1675,6 +1706,41 @@ function applyFooterText(text) {
   if (el && text) el.textContent = text;
 }
 
+function updateRuleFormVisibility(form) {
+  if (!form) return;
+  const type = form.querySelector('.rule-type').value;
+  form.querySelector('.rule-time').closest('.field').style.display = (type === 'digest_summary') ? '' : 'none';
+  form.querySelector('.rule-count-field').style.display = (type === 'digest_summary') ? '' : 'none';
+  form.querySelector('.rule-mode-field').style.display = (type === 'digest_summary') ? '' : 'none';
+  form.querySelector('.rule-keyword-field').style.display = (type === 'keyword_hit') ? '' : 'none';
+  form.querySelector('.rule-min-field').style.display = (type === 'importance_hit') ? '' : 'none';
+  form.querySelector('.rule-source-field').style.display = (type === 'source_hit') ? '' : 'none';
+}
+
+async function refreshRuleFormOptions() {
+  const form = document.getElementById('rule-form');
+  if (!form) return;
+  const kwSel = form.querySelector('.rule-keyword');
+  const srcSel = form.querySelector('.rule-source');
+  const kws = (settingsCache.keywords || []).map(k => String(k.phrase || '').trim()).filter(Boolean);
+  kwSel.innerHTML = kws.length
+    ? kws.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('')
+    : '<option value="">Немає ключових слів</option>';
+  try {
+    const d = await api('/api/sources');
+    const all = [...(d.rss || []), ...(d.telegram || [])];
+    notificationSourceOptions = all
+      .filter(s => s && s.id)
+      .map(s => ({ id: String(s.id), name: String(s.name || s.id) }));
+  } catch {
+    notificationSourceOptions = [];
+  }
+  srcSel.innerHTML = notificationSourceOptions.length
+    ? notificationSourceOptions.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')
+    : '<option value="">Немає джерел</option>';
+  updateRuleFormVisibility(form);
+}
+
 async function clearNotifications() {
   if (!isAdmin) return;
   const d = await api('/api/notifications/clear', {method:'POST', body:'{}'});
@@ -1734,22 +1800,23 @@ async function deleteRule(id) {
 
 async function createRule(form) {
   const type = form.querySelector('.rule-type').value;
-  const target_chat_id = form.querySelector('.rule-chat').value.trim();
+  const target_chat_id = form.querySelector('.rule-chat').value.trim() || document.getElementById('set-bot-chat-id').value.trim();
   const schedule_time = form.querySelector('.rule-time').value;
-  const paramRaw = form.querySelector('.rule-param').value.trim();
   if (!target_chat_id) { toast('Вкажіть Chat ID', true); return; }
   const params = {};
   if (type === 'digest_summary') {
-    const m = /count=(\d+)/i.exec(paramRaw); params.count = m ? parseInt(m[1], 10) : 5;
-    params.mode = /mode=keywords/i.test(paramRaw) ? 'keywords' : 'top';
+    params.count = Math.max(1, parseInt(form.querySelector('.rule-count').value, 10) || 5);
+    params.mode = form.querySelector('.rule-mode').value === 'keywords' ? 'keywords' : 'top';
   } else if (type === 'keyword_hit') {
-    const kv = paramRaw.replace(/^keywords=/i, '');
-    params.keywords = kv.split(',').map(x => x.trim()).filter(Boolean);
+    const kw = form.querySelector('.rule-keyword').value.trim();
+    if (!kw) { toast('Додайте ключові слова у вкладці "Ключові слова"', true); return; }
+    params.keywords = [kw];
   } else if (type === 'importance_hit') {
-    const m = /min=(\d+)/i.exec(paramRaw); params.min_importance = m ? parseInt(m[1], 10) : 8;
+    params.min_importance = Math.max(1, Math.min(10, parseInt(form.querySelector('.rule-min').value, 10) || 8));
   } else if (type === 'source_hit') {
-    const sv = paramRaw.replace(/^sources=/i, '');
-    params.source_ids = sv.split(',').map(x => x.trim()).filter(Boolean);
+    const src = form.querySelector('.rule-source').value.trim();
+    if (!src) { toast('Додайте джерела у вкладці "Джерела"', true); return; }
+    params.source_ids = [src];
   }
   const d = await api('/api/notifications/rules/create', {
     method: 'POST',
@@ -1757,7 +1824,6 @@ async function createRule(form) {
   });
   if (d.ok) {
     toast('Правило додано');
-    form.querySelector('.rule-param').value = '';
     loadNotificationRules();
   } else toast(d.error||'Помилка', true);
 }
